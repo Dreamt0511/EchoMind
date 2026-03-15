@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import os
 
 # 页面配置
 st.set_page_config(
@@ -71,156 +70,108 @@ st.markdown("""
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'knowledge_bases' not in st.session_state:
-    st.session_state.knowledge_bases = ['默认知识库', '技术文档库', '项目资料库']
+    st.session_state.knowledge_bases = ['默认知识库']
 if 'user_info' not in st.session_state:
     st.session_state.user_info = {
         'name': '访客',
         'email': '',
         'preferences': {}
     }
+if 'selected_kb' not in st.session_state:
+    st.session_state.selected_kb = '默认知识库'
 
-# 主标题
-st.markdown('<h1 class="main-header">📚 个性化问答助手</h1>', unsafe_allow_html=True)
 
-# 创建两列布局
-left_col, right_col = st.columns([1, 2])
+# 定义发送消息的函数
+def send_message():
+    """处理发送消息的逻辑"""
+    user_input = st.session_state.user_question
 
-with left_col:
-    # 左侧面板 - 知识库和个人信息
-    with st.container():
-        st.markdown('<div class="stCard">', unsafe_allow_html=True)
+    if user_input and user_input.strip():
+        # 获取当前选中的知识库
+        selected_kb = st.session_state.selected_kb
 
-        # 已上传的知识库列表
-        st.subheader("📁 已上传的知识库")
-        for kb in st.session_state.knowledge_bases:
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write(f"• {kb}")
-            with col2:
-                if st.button("选择", key=f"select_{kb}"):
-                    st.session_state.selected_kb = kb
-                    st.success(f"已选择: {kb}")
+        # 添加用户消息到历史记录
+        st.session_state.chat_history.append({
+            "role": "user",
+            "content": user_input,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
 
-        # 上传新知识库
-        st.subheader("📤 上传知识库")
-        st.markdown('<div class="upload-area">', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader(
-            "拖拽或点击上传文件",
-            type=['txt', 'pdf', 'docx', 'md', 'csv'],
-            help="支持的文档类型：TXT, PDF, DOCX, Markdown, CSV"
-        )
-        if uploaded_file is not None:
-            st.success(f"文件 {uploaded_file.name} 上传成功！")
-            if uploaded_file.name not in st.session_state.knowledge_bases:
-                st.session_state.knowledge_bases.append(uploaded_file.name)
+        # 模拟AI响应（实际应用中这里应该调用知识库查询）
+        with st.spinner("正在思考中..."):
+            # 这里可以添加实际的知识库查询逻辑
+            ai_response = f"这是关于 '{user_input}' 在知识库 '{selected_kb}' 中的回答。"
 
-        # 支持的文档类型提示
-        st.info("📌 支持的文档类型：TXT, PDF, DOCX, Markdown, CSV")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # 个人信息相关
-        st.subheader("👤 个人信息")
-        with st.form("user_info_form"):
-            name = st.text_input("姓名", value=st.session_state.user_info['name'])
-            email = st.text_input("邮箱", value=st.session_state.user_info['email'])
-            preferences = st.text_area("偏好设置", value=st.session_state.user_info.get('preferences', ''))
-
-            if st.form_submit_button("保存个人信息"):
-                st.session_state.user_info = {
-                    'name': name,
-                    'email': email,
-                    'preferences': preferences
-                }
-                st.success("个人信息已保存！")
-
-        # GitHub仓库链接
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown(
-                "[![GitHub](https://img.shields.io/badge/GitHub-View_on_GitHub-blue?logo=GitHub)](https://github.com/yourusername/your-repo)")
-            st.markdown("跳转到本项目GitHub仓库")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-with right_col:
-    # 右侧面板 - 对话区域
-    with st.container():
-        st.markdown('<div class="stCard">', unsafe_allow_html=True)
-
-        # 选择知识库提问
-        st.subheader("💬 选择知识库提问")
-
-        # 知识库选择下拉框
-        selected_kb = st.selectbox(
-            "选择要查询的知识库",
-            options=st.session_state.knowledge_bases,
-            index=0
-        )
-
-        # 对话历史显示区域
-        st.subheader("📜 对话历史")
-
-        # 对话历史容器
-        chat_container = st.container()
-        with chat_container:
-            if st.session_state.chat_history:
-                for chat in st.session_state.chat_history:
-                    with st.chat_message(chat["role"]):
-                        st.write(chat["content"])
-                        if "timestamp" in chat:
-                            st.caption(f"发送时间: {chat['timestamp']}")
-            else:
-                st.info("暂无对话历史，开始您的第一个问题吧！")
-
-        # 对话输入区域
-        st.markdown("---")
-
-        # 使用两列布局放置输入框和发送按钮
-        input_col, button_col = st.columns([5, 1])
-
-        with input_col:
-            user_input = st.text_input(
-                "输入您的问题...",
-                key="user_question",
-                placeholder="请输入您的问题...",
-                label_visibility="collapsed"
-            )
-
-        with button_col:
-            send_button = st.button("📤 发送", use_container_width=True)
-
-        # 处理发送按钮
-        if send_button and user_input:
-            # 添加用户消息到历史记录
             st.session_state.chat_history.append({
-                "role": "user",
-                "content": user_input,
+                "role": "assistant",
+                "content": ai_response,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
-            # 模拟AI响应（实际应用中这里应该调用知识库查询）
-            with st.spinner("正在思考中..."):
-                # 这里可以添加实际的知识库查询逻辑
-                ai_response = f"这是关于 '{user_input}' 在知识库 '{selected_kb}' 中的回答。"
+        # 清空输入框
+        st.session_state.user_question = ""
 
-                st.session_state.chat_history.append({
-                    "role": "assistant",
-                    "content": ai_response,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
+# 主标题
+st.markdown('<h1 class="main-header">📚 个性化问答助手-EchoMind</h1>', unsafe_allow_html=True)
 
-            # 重新运行以更新显示
-            st.rerun()
+# 右侧面板 - 对话区域
+with st.container():
+    st.markdown('<div class="stCard">', unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
+    # 对话历史容器
+    chat_container = st.container()
+    with chat_container:
+        if st.session_state.chat_history:
+            for chat in st.session_state.chat_history:
+                with st.chat_message(chat["role"]):
+                    st.write(chat["content"])
+                    if "timestamp" in chat:
+                        st.caption(f"发送时间: {chat['timestamp']}")
 
+    # 对话输入区域
+    st.markdown("---")
+
+    # 使用两列布局放置输入框和发送按钮
+    input_col, button_col = st.columns([5, 1])
+
+    with input_col:
+        # 添加Enter键发送功能：通过on_change回调
+        user_input = st.text_input(
+            "输入您的问题...",
+            key="user_question",
+            placeholder="请输入您的问题... (按Enter键发送)",
+            label_visibility="collapsed",
+            on_change=send_message  # 当按下Enter键时触发
+        )
+
+    with button_col:
+        send_button = st.button("📤 发送", use_container_width=True, on_click=send_message)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # 选择知识库提问
+    st.subheader("💬 选择知识库提问")
+
+    # 知识库选择下拉框
+    selected_kb = st.selectbox(
+        "选择知识库进行提问",
+        options=st.session_state.knowledge_bases,
+        index=st.session_state.knowledge_bases.index(
+            st.session_state.selected_kb) if st.session_state.selected_kb in st.session_state.knowledge_bases else 0,
+        key="kb_selector"
+    )
+    # 更新选中的知识库
+    if selected_kb != st.session_state.selected_kb:
+        st.session_state.selected_kb = selected_kb
+
+# 添加一个空的div来向下移动标题
+st.markdown('<div style="margin-top: 20rem;"></div>', unsafe_allow_html=True)
 # 底部信息
 st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: #666; padding: 1rem;'>
-        <p>© 2024 个性化问答助手 | 基于Streamlit构建 | 版本 1.0.0</p>
+        <p>个性化问答助手-EchoMind | 作者 Dreamt</p>
     </div>
     """,
     unsafe_allow_html=True
@@ -229,6 +180,37 @@ st.markdown(
 # 在侧边栏添加一些额外的功能
 with st.sidebar:
     st.markdown("## ⚙️ 设置")
+
+    # 已上传的知识库列表 - 放在最前面
+    st.markdown("### 📁 已上传的知识库")
+    for kb in st.session_state.knowledge_bases:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.write(f"• {kb}")
+        with col2:
+            if st.button("选择", key=f"select_{kb}"):
+                st.session_state.selected_kb = kb
+                st.success(f"已选择: {kb}")
+
+    # 上传新知识库
+    st.markdown("### 📤 上传知识库")
+    uploaded_file = st.file_uploader(
+        "拖拽或点击上传文件",
+        type=['txt', 'pdf', 'docx', 'md', 'csv'],
+        help="支持的文档类型：TXT, PDF, DOCX, Markdown, CSV",
+        key="sidebar_file_uploader"
+    )
+    if uploaded_file is not None:
+        st.success(f"文件 {uploaded_file.name} 上传成功！")
+        if uploaded_file.name not in st.session_state.knowledge_bases:
+            st.session_state.knowledge_bases.append(uploaded_file.name)
+            st.rerun()
+
+    # 支持的文档类型提示
+    st.info("📌 支持的文档类型：TXT, PDF, DOCX, Markdown, CSV (单个文件不超过200MB)")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
 
     # 清空对话历史按钮
     if st.button("🗑️ 清空对话历史", use_container_width=True):
@@ -255,6 +237,16 @@ with st.sidebar:
     st.markdown("### 📊 系统状态")
     st.info(f"知识库数量: {len(st.session_state.knowledge_bases)}")
     st.info(f"对话条数: {len(st.session_state.chat_history)}")
+
+    # GitHub仓库链接
+    st.markdown("---")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown(
+            "[![GitHub](https://img.shields.io/badge/GitHub-View_on_GitHub-blue?logo=GitHub)](https://github.com/Dreamt0511/EchoMind)")
+        st.markdown("跳转到本项目GitHub仓库")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # 运行说明
 if __name__ == "__main__":
