@@ -131,9 +131,6 @@ with st.container():
     # 对话输入区域
     st.markdown("---")
 
-    # 添加一个空的div来向下移动标题
-    st.markdown('<div style="margin-top: 25rem;"></div>', unsafe_allow_html=True)
-
     # 使用两列布局放置输入框和发送按钮
     input_col, button_col = st.columns([5, 1])
 
