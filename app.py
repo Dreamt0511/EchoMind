@@ -111,13 +111,8 @@ def send_message():
         # 清空输入框
         st.session_state.user_question = ""
 
-# 主标题
-st.markdown('<h1 class="main-header">📚 个性化问答助手-EchoMind</h1>', unsafe_allow_html=True)
-
 # 右侧面板 - 对话区域
 with st.container():
-    st.markdown('<div class="stCard">', unsafe_allow_html=True)
-
     # 对话历史容器
     chat_container = st.container()
     with chat_container:
@@ -130,7 +125,8 @@ with st.container():
 
     # 对话输入区域
     st.markdown("---")
-
+    # 添加一个空的div来向下移动标题
+    st.markdown('<div style="margin-top: 25rem;"></div>', unsafe_allow_html=True)
     # 使用两列布局放置输入框和发送按钮
     input_col, button_col = st.columns([5, 1])
 
@@ -148,13 +144,9 @@ with st.container():
         send_button = st.button("📤 发送", use_container_width=True, on_click=send_message)
 
     st.markdown('</div>', unsafe_allow_html=True)
-
-    # 选择知识库提问
-    st.subheader("💬 选择知识库提问")
-
     # 知识库选择下拉框
     selected_kb = st.selectbox(
-        "选择知识库进行提问",
+        "💬选择知识库进行提问",
         options=st.session_state.knowledge_bases,
         index=st.session_state.knowledge_bases.index(
             st.session_state.selected_kb) if st.session_state.selected_kb in st.session_state.knowledge_bases else 0,
@@ -164,8 +156,31 @@ with st.container():
     if selected_kb != st.session_state.selected_kb:
         st.session_state.selected_kb = selected_kb
 
-# 添加一个空的div来向下移动标题
-st.markdown('<div style="margin-top: 20rem;"></div>', unsafe_allow_html=True)
+    # 创建两列，比例相等
+    col1, col2 = st.columns(2)
+
+    # 清空对话历史按钮 - 放在第一列
+    with col1:
+        if st.button("🗑️ 清空对话历史", use_container_width=True):
+            st.session_state.chat_history = []
+            st.success("对话历史已清空！")
+            st.rerun()
+
+    # 对话历史导出按钮 - 放在第二列
+    with col2:
+        if st.button("📥 导出对话历史", use_container_width=True):
+            if st.session_state.chat_history:
+                # 创建DataFrame
+                df = pd.DataFrame(st.session_state.chat_history)
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="点击下载CSV文件",
+                    data=csv,
+                    file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("没有对话历史可以导出")
 # 底部信息
 st.markdown("---")
 st.markdown(
@@ -179,7 +194,8 @@ st.markdown(
 
 # 在侧边栏添加一些额外的功能
 with st.sidebar:
-    st.markdown("## ⚙️ 设置")
+    # 主标题
+    st.markdown('<h1 class="main-header">📚 个性化问答助手-EchoMind 📚</h1>', unsafe_allow_html=True)
 
     # 已上传的知识库列表 - 放在最前面
     st.markdown("### 📁 已上传的知识库")
@@ -191,6 +207,8 @@ with st.sidebar:
             if st.button("选择", key=f"select_{kb}"):
                 st.session_state.selected_kb = kb
                 st.success(f"已选择: {kb}")
+
+    st.markdown("---")
 
     # 上传新知识库
     st.markdown("### 📤 上传知识库")
@@ -211,27 +229,6 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("---")
-
-    # 清空对话历史按钮
-    if st.button("🗑️ 清空对话历史", use_container_width=True):
-        st.session_state.chat_history = []
-        st.success("对话历史已清空！")
-        st.rerun()
-
-    # 对话历史导出
-    if st.button("📥 导出对话历史", use_container_width=True):
-        if st.session_state.chat_history:
-            # 创建DataFrame
-            df = pd.DataFrame(st.session_state.chat_history)
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="点击下载CSV文件",
-                data=csv,
-                file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-        else:
-            st.warning("没有对话历史可以导出")
 
     # 系统状态
     st.markdown("### 📊 系统状态")
