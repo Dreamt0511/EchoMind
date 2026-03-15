@@ -1,0 +1,186 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="streamlit" />
+          <option value="aiofiles" />
+          <option value="aiohttp" />
+          <option value="aiosignal" />
+          <option value="altair" />
+          <option value="annotated-types" />
+          <option value="anyio" />
+          <option value="asttokens" />
+          <option value="async-timeout" />
+          <option value="attrs" />
+          <option value="backcall" />
+          <option value="backoff" />
+          <option value="beautifulsoup4" />
+          <option value="cachetools" />
+          <option value="certifi" />
+          <option value="chardet" />
+          <option value="charset-normalizer" />
+          <option value="chromadb" />
+          <option value="click" />
+          <option value="clickhouse-connect" />
+          <option value="coloredlogs" />
+          <option value="comm" />
+          <option value="contourpy" />
+          <option value="cycler" />
+          <option value="dataclasses" />
+          <option value="dataclasses-json" />
+          <option value="debugpy" />
+          <option value="decorator" />
+          <option value="duckdb" />
+          <option value="entrypoints" />
+          <option value="exceptiongroup" />
+          <option value="executing" />
+          <option value="fastapi" />
+          <option value="ffmpy" />
+          <option value="filelock" />
+          <option value="filetype" />
+          <option value="flatbuffers" />
+          <option value="fonttools" />
+          <option value="frozenlist" />
+          <option value="fsspec" />
+          <option value="gradio" />
+          <option value="gradio_client" />
+          <option value="greenlet" />
+          <option value="h11" />
+          <option value="hnswlib" />
+          <option value="httpcore" />
+          <option value="httptools" />
+          <option value="httpx" />
+          <option value="huggingface-hub" />
+          <option value="humanfriendly" />
+          <option value="idna" />
+          <option value="importlib-metadata" />
+          <option value="importlib-resources" />
+          <option value="ipykernel" />
+          <option value="ipython" />
+          <option value="jedi" />
+          <option value="jieba" />
+          <option value="Jinja2" />
+          <option value="joblib" />
+          <option value="jsonschema" />
+          <option value="jsonschema-specifications" />
+          <option value="jupyter_client" />
+          <option value="jupyter_core" />
+          <option value="kiwisolver" />
+          <option value="langchain" />
+          <option value="langsmith" />
+          <option value="linkify-it-py" />
+          <option value="lxml" />
+          <option value="loguru" />
+          <option value="lz4" />
+          <option value="Markdown" />
+          <option value="markdown-it-py" />
+          <option value="MarkupSafe" />
+          <option value="marshmallow" />
+          <option value="matplotlib" />
+          <option value="matplotlib-inline" />
+          <option value="mdit-py-plugins" />
+          <option value="mdurl" />
+          <option value="monotonic" />
+          <option value="mpmath" />
+          <option value="multidict" />
+          <option value="mypy-extensions" />
+          <option value="nest-asyncio" />
+          <option value="nltk" />
+          <option value="numexpr" />
+          <option value="numpy" />
+          <option value="onnxruntime" />
+          <option value="openai" />
+          <option value="orjson" />
+          <option value="overrides" />
+          <option value="packaging" />
+          <option value="pandas" />
+          <option value="parso" />
+          <option value="pexpect" />
+          <option value="pickleshare" />
+          <option value="Pillow" />
+          <option value="platformdirs" />
+          <option value="posthog" />
+          <option value="prompt-toolkit" />
+          <option value="protobuf" />
+          <option value="psutil" />
+          <option value="ptyprocess" />
+          <option value="pulsar-client" />
+          <option value="pure-eval" />
+          <option value="pydantic" />
+          <option value="pydantic_core" />
+          <option value="pydub" />
+          <option value="Pygments" />
+          <option value="PyJWT" />
+          <option value="PyMuPDF" />
+          <option value="PyMuPDFb" />
+          <option value="pyparsing" />
+          <option value="python-dateutil" />
+          <option value="python-dotenv" />
+          <option value="python-magic" />
+          <option value="python-multipart" />
+          <option value="pytz" />
+          <option value="PyYAML" />
+          <option value="referencing" />
+          <option value="regex" />
+          <option value="requests" />
+          <option value="rouge-chinese" />
+          <option value="rpds-py" />
+          <option value="scikit-learn" />
+          <option value="scipy" />
+          <option value="semantic-version" />
+          <option value="six" />
+          <option value="sniffio" />
+          <option value="SQLAlchemy" />
+          <option value="stack-data" />
+          <option value="starlette" />
+          <option value="sympy" />
+          <option value="tabulate" />
+          <option value="tenacity" />
+          <option value="threadpoolctl" />
+          <option value="tokenizers" />
+          <option value="toolz" />
+          <option value="tornado" />
+          <option value="tqdm" />
+          <option value="traitlets" />
+          <option value="typing_extensions" />
+          <option value="typing-inspect" />
+          <option value="tzdata" />
+          <option value="uc-micro-py" />
+          <option value="unstructured" />
+          <option value="urllib3" />
+          <option value="uvicorn" />
+          <option value="uvloop" />
+          <option value="watchfiles" />
+          <option value="wcwidth" />
+          <option value="websocket-client" />
+          <option value="websockets" />
+          <option value="wheel" />
+          <option value="yarl" />
+          <option value="zhipuai" />
+          <option value="zipp" />
+          <option value="zstandard" />
+          <option value="langchain-community" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPep8NamingInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredErrors">
+        <list>
+          <option value="N806" />
+          <option value="N803" />
+          <option value="N802" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredIdentifiers">
+        <list>
+          <option value="streamlit" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="SqlNoDataSourceInspection" enabled="false" level="WARNING" enabled_by_default="false" />
+  </profile>
+</component>
