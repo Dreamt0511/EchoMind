@@ -5,8 +5,7 @@ import os
 
 # 页面配置
 st.set_page_config(
-    page_title="个人知识库助手",
-    page_icon="📚",
+    page_title="个性化问答助手",
     layout="wide"
 )
 
@@ -260,7 +259,7 @@ col1, col2, col3,col4 = st.columns([3, 1, 3,3])
 with col2:
     st.markdown(
         "[![GitHub](https://img.shields.io/badge/GitHub-View_on_GitHub-blue?logo=GitHub)](https://github.com/Dreamt0511/EchoMind)")
-    st.markdown("跳转到本项目GitHub仓库")
+    #st.markdown("跳转到本项目GitHub仓库")
 with col3:
     st.markdown(
         """
