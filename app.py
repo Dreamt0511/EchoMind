@@ -162,11 +162,11 @@ def cancel_delete():
     st.session_state.pending_delete = None
 
 
-# ===================== 修复后的对话区域 =====================
+# ===================== 完美修复版：自动滑到底部 + 可手动查看历史消息 =====================
 chat_html = """
-<div style="height: 600px; overflow-y: auto; border: 1px solid #e0e0e0; 
-            border-radius: 10px; padding: 20px; margin-bottom: 20px; 
-            background-color: #f9f9f9;">
+<div style="height: 580px; overflow-y: auto; border: 1px solid #e0e0e0; 
+            border-radius: 10px; padding: 20px; 
+            background-color: #f9f9f9;" id="chat-container">
 """
 if st.session_state.chat_history:
     for chat in st.session_state.chat_history:
@@ -174,7 +174,7 @@ if st.session_state.chat_history:
             chat_html += f"""
             <div style="background-color: #DCF8C6; padding:10px; border-radius:8px; 
                         margin:8px 0; max-width:80%; margin-left:auto;">
-                <strong>你:</strong> {chat['content']}<br>
+                <strong></strong> {chat['content']}<br>
                 <small style="color:#666;">{chat['timestamp']}</small>
             </div>"""
         else:
@@ -184,17 +184,32 @@ if st.session_state.chat_history:
                 <strong>助手:</strong> {chat['content']}<br>
                 <small style="color:#666;">{chat['timestamp']}</small>
             </div>"""
-chat_html += "</div>"
+chat_html += """
+</div>
+<script>
+    // 核心修复：等页面完全渲染后再平滑滚动到底部
+    window.addEventListener('load', function() {
+        const chatContainer = document.getElementById('chat-container');
+        // 强制滚动到最底部
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    });
+</script>
+"""
 
-# ✅ 关键修复：用 components.html 强制渲染
 import streamlit.components.v1 as components
-components.html(chat_html, height=500, scrolling=True)
+
+# 保持开启滚动，高度匹配内部容器
+components.html(chat_html, height=600, scrolling=True)
 
 # 知识库选择
 kb_list = list(st.session_state.knowledge_bases.keys())
 if kb_list:
-    selected_kb = st.selectbox("💬选择知识库进行提问", options=kb_list,
-                               index=kb_list.index(st.session_state.selected_kb), key="kb_selector")
+    selected_kb = st.selectbox("💬选择知识库进行提问",
+                               options=kb_list,
+                               index=kb_list.index(st.session_state.selected_kb),
+                               key="kb_selector",
+                               width= 300
+                               )
     if selected_kb != st.session_state.selected_kb:
         st.session_state.selected_kb = selected_kb
 
@@ -243,7 +258,7 @@ with st.sidebar:
     st.markdown("<h1 style='text-align:center'>EchoMind</h1>", unsafe_allow_html=True)
     st.markdown("### 📚 知识库管理")
     total = sum(len(v) for v in st.session_state.knowledge_bases.values())
-    st.info(f"库：{len(st.session_state.knowledge_bases)} | 文件：{total}")
+    st.info(f"知识库：{len(st.session_state.knowledge_bases)} | 文件总数：{total}")
 
     with st.expander("➕ 新建知识库"):
         name = st.text_input("名称", key="new_kb")
@@ -294,12 +309,3 @@ with st.sidebar:
         st.selectbox("记录", ["当前：" + summary()] + st.session_state.conversation_summaries)
     else:
         st.selectbox("记录", ["无"], disabled=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 保存当前"):
-            st.session_state.conversation_summaries.append(summary())
-            st.rerun()
-    with c2:
-        if st.button("🗑️ 清空历史"):
-            st.session_state.conversation_summaries = []
-            st.rerun()
