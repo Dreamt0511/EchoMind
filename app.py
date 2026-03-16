@@ -8,6 +8,10 @@ st.set_page_config(
     page_title="个性化问答助手",
     layout="wide"
 )
+# 创建三列，中间列放图片，两侧列占空
+left_col, center_col, right_col = st.columns([1.5, 2, 1])
+with center_col:
+    st.image("images/EchoMind.png")
 
 # 自定义CSS样式
 st.markdown("""
@@ -140,22 +144,26 @@ def request_delete(delete_type, kb_name, file_name=None):
 
 
 def confirm_delete():
+    """确认删除"""
     if st.session_state.pending_delete:
         delete_info = st.session_state.pending_delete
+
         if delete_info['type'] == 'file':
-            kb_name, file_name = delete_info['kb_name'], delete_info['file_name']
-            if kb_name in st.session_state.knowledge_bases and file_name in st.session_state.knowledge_bases[kb_name]:
-                st.session_state.knowledge_bases[kb_name].remove(file_name)
-                st.success(f"文件 '{file_name}' 已删除！")
+            kb_name = delete_info['kb_name']
+            file_name = delete_info['file_name']
+            if kb_name in st.session_state.knowledge_bases:
+                if file_name in st.session_state.knowledge_bases[kb_name]:
+                    st.session_state.knowledge_bases[kb_name].remove(file_name)
+
         elif delete_info['type'] == 'kb':
             kb_name = delete_info['kb_name']
             if kb_name in st.session_state.knowledge_bases and kb_name != "默认知识库":
                 del st.session_state.knowledge_bases[kb_name]
                 if st.session_state.selected_kb == kb_name:
                     st.session_state.selected_kb = "默认知识库"
-                st.success(f"知识库 '{kb_name}' 已删除！")
+
+        # 清除待删除状态
         st.session_state.pending_delete = None
-        st.rerun()
 
 
 def cancel_delete():
@@ -199,7 +207,7 @@ chat_html += """
 import streamlit.components.v1 as components
 
 # 保持开启滚动，高度匹配内部容器
-components.html(chat_html, height=600, scrolling=True)
+components.html(chat_html, height=500, scrolling=True)
 
 # 知识库选择
 kb_list = list(st.session_state.knowledge_bases.keys())
@@ -232,7 +240,6 @@ col1, col2 = st.columns(2)
 with col1:
     if st.button("🗑️ 清空对话", use_container_width=True):
         st.session_state.chat_history = []
-        st.rerun()
 with col2:
     if st.button("📥 导出历史", use_container_width=True):
         if st.session_state.chat_history:
@@ -256,16 +263,22 @@ with c3:
 # 侧边栏
 with st.sidebar:
     st.markdown("<h1 style='text-align:center'>EchoMind</h1>", unsafe_allow_html=True)
-    st.markdown("### 📚 知识库管理")
-    total = sum(len(v) for v in st.session_state.knowledge_bases.values())
-    st.info(f"知识库：{len(st.session_state.knowledge_bases)} | 文件总数：{total}")
-
-    with st.expander("➕ 新建知识库"):
-        name = st.text_input("名称", key="new_kb")
-        if st.button("创建"):
-            if name and name not in st.session_state.knowledge_bases:
-                st.session_state.knowledge_bases[name] = []
-                st.rerun()
+    st.markdown("<h1 style='text-align: center;'>个性化问答助手</h1>", unsafe_allow_html=True)
+    st.markdown("### 知识库管理")
+    total_files = sum(len(files) for files in st.session_state.knowledge_bases.values())
+    st.info(f"知识库数量: {len(st.session_state.knowledge_bases)}")
+    st.info(f"总文件数: {total_files}")
+    # 创建新知识库
+    with st.expander("➕ 创建新知识库", expanded=False):
+        new_kb_name = st.text_input("知识库名称", key="new_kb_name")
+        if st.button("创建知识库", use_container_width=True):
+            if new_kb_name and new_kb_name not in st.session_state.knowledge_bases:
+                st.session_state.knowledge_bases[new_kb_name] = []
+                st.success(f"知识库 '{new_kb_name}' 创建成功！")
+            elif new_kb_name in st.session_state.knowledge_bases:
+                st.error("知识库名称已存在！")
+            else:
+                st.error("请输入知识库名称！")
 
     if st.session_state.pending_delete:
         info = st.session_state.pending_delete
@@ -279,21 +292,57 @@ with st.sidebar:
         with co2:
             st.button("❌ 取消", on_click=cancel_delete)
 
-    st.markdown("### 📁 列表")
-    for kb, files in st.session_state.knowledge_bases.items():
-        with st.expander(f"📚 {kb} ({len(files)})"):
-            for f in files:
-                cc1, cc2 = st.columns([3, 1])
-                cc1.text(f"📄 {f}")
-                cc2.button("🗑️", key=f"d_{kb}_{f}", on_click=request_delete, args=('file', kb, f))
-            up = st.file_uploader(f"上传到 {kb}", type=['txt', 'pdf', 'docx', 'md', 'csv'], key=f"up_{kb}")
-            if up and up.name not in st.session_state.knowledge_bases[kb]:
-                st.session_state.knowledge_bases[kb].append(up.name)
-                st.rerun()
-            if kb != "默认知识库":
-                st.button("🗑️ 删除知识库", key=f"dkb_{kb}", on_click=request_delete, args=('kb', kb))
+    st.markdown("---")
 
-    st.markdown("### 🕒 历史")
+    # 显示所有知识库及其文件
+    st.markdown("### 知识库列表")
+    # 为每个知识库创建可展开的区域
+    for kb_name, files in st.session_state.knowledge_bases.items():
+        with st.expander(f"📚 {kb_name} ({len(files)}个文件)", expanded=False):
+            # 显示该知识库下的文件列表
+            if files:
+                for i, file_name in enumerate(files):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.text(f"📄 {file_name}")
+                    with col2:
+                        # 删除单个文件的按钮
+                        if st.button("🗑️", key=f"del_file_{kb_name}_{i}",
+                                     help=f"删除{file_name}",
+                                     on_click=request_delete,
+                                     args=('file', kb_name, file_name)):
+                            pass
+            else:
+                st.info("该知识库暂无文件")
+
+            # 向该知识库上传文件
+            st.markdown("---")
+            uploaded_file = st.file_uploader(
+                f"上传文件到 {kb_name}",
+                type=['txt', 'pdf', 'docx', 'md', 'csv'],
+                key=f"uploader_{kb_name}",
+                label_visibility="collapsed"
+            )
+            # 文件上传说明
+            st.info("📌 支持的文档类型：TXT, PDF, DOCX, Markdown, CSV (单个文件不超过200MB)")
+            if uploaded_file is not None:
+                if uploaded_file.name not in st.session_state.knowledge_bases[kb_name]:
+                    st.session_state.knowledge_bases[kb_name].append(uploaded_file.name)
+                    st.success(f"文件 {uploaded_file.name} 上传到 {kb_name} 成功！")
+                else:
+                    st.warning("文件已存在于该知识库中！")
+
+            # 如果不是默认知识库，显示删除知识库按钮
+            if kb_name != "默认知识库":
+                if st.button(f"🗑️ 删除整个知识库", key=f"del_kb_{kb_name}",
+                             use_container_width=True,
+                             on_click=request_delete,
+                             args=('kb', kb_name)):
+                    pass
+
+    st.markdown("---")
+
+    st.markdown("### 🕒 历史对话")
     if 'conversation_summaries' not in st.session_state:
         st.session_state.conversation_summaries = []
 
