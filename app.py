@@ -3,358 +3,316 @@ import pandas as pd
 from datetime import datetime
 import os
 
-# 页面配置
+# ==========================================
+# 1. 页面配置 & 响应式 CSS
+# ==========================================
 st.set_page_config(
-    page_title="个性化问答助手",
-    layout="wide"
+    page_title="EchoMind - 个性化AI问答助手",
+    layout="wide",
+    initial_sidebar_state="auto"
 )
-# 创建三列，中间列放图片，两侧列占空
-left_col, center_col, right_col = st.columns([1.5, 2, 1])
-with center_col:
-    st.image("images/EchoMind.png")
 
-# 自定义CSS样式
-st.markdown("""
-<style>
-    /* 主标题样式 */
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E88E5;
-        text-align: center;
-        margin-bottom: 2rem;
-        padding: 1rem;
-        background: linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%);
-        border-radius: 10px;
-    }
+# 2. 加载外部 CSS 文件
+# ==========================================
+def load_css():
+    """加载外部 CSS 文件"""
+    css_file = "style.css"
+    if os.path.exists(css_file):
+        with open(css_file, 'r', encoding='utf-8') as f:
+            css_content = f.read()
+        st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+        return True
+    else:
+        st.warning(f"⚠️ 未找到 {css_file} 文件，使用默认样式")
+        return False
 
-    /* 卡片样式 */
-    .stCard {
-        background-color: #ffffff;
-        padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-    }
+# 加载 CSS
+CUSTOM_CSS =load_css()
 
-    /* 上传区域样式 */
-    .upload-area {
-        border: 2px dashed #1E88E5;
-        border-radius: 10px;
-        padding: 2rem;
-        text-align: center;
-        background-color: #f8f9fa;
-    }
-
-    /* 按钮样式 */
-    .stButton > button {
-        width: 100%;
-        border-radius: 5px;
-        background-color: #1E88E5;
-        color: white;
-        font-weight: bold;
-    }
-
-    /* 侧边栏样式 */
-    .css-1d391kg {
-        background-color: #f8f9fa;
-    }
-
-    /* 信息提示框 */
-    .info-box {
-        background-color: #e3f2fd;
-        padding: 0.5rem;
-        border-radius: 5px;
-        border-left: 3px solid #1E88E5;
-        margin: 0.5rem 0;
-    }
-
-    /* 文件列表样式 */
-    .file-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.5rem;
-        margin: 0.2rem 0;
-        background-color: #f8f9fa;
-        border-radius: 5px;
-    }
-
-    /* 删除按钮样式 */
-    button[key*="del_file"], button[key*="del_kb"] {
-        background-color: #dc3545 !important;
-    }
-
-    button[key*="del_file"]:hover, button[key*="del_kb"]:hover {
-        background-color: #c82333 !important;
-    }
-
-    /* 确认区域样式 */
-    .confirm-delete-area {
-        background-color: #fff3cd;
-        border: 1px solid #ffeeba;
-        border-radius: 5px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# 初始化session state
+# ==========================================
+# 2. 初始化 Session State
+# ==========================================
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'knowledge_bases' not in st.session_state:
-    st.session_state.knowledge_bases = {"默认知识库": []}
-if 'user_info' not in st.session_state:
-    st.session_state.user_info = {
-        'name': '访客',
-        'email': '',
-        'preferences': {}
-    }
+    st.session_state.knowledge_bases = {"默认知识库": ["产品手册.pdf", "FAQ.txt"]}
 if 'selected_kb' not in st.session_state:
     st.session_state.selected_kb = '默认知识库'
 if 'pending_delete' not in st.session_state:
     st.session_state.pending_delete = None
 
-
-# 定义发送消息的函数
-def send_message():
-    user_input = st.session_state.user_question
-    if user_input and user_input.strip():
-        selected_kb = st.session_state.selected_kb
+# ==========================================
+# 3. 辅助函数 & 回调
+# ==========================================
+def handle_send(input_text=None):
+    """处理发送消息逻辑"""
+    query = input_text or st.session_state.get("user_query_input")
+    
+    if query and query.strip():
+        # 1. 添加用户消息
         st.session_state.chat_history.append({
             "role": "user",
-            "content": user_input,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "content": query.strip(),
+            "timestamp": datetime.now().strftime("%H:%M")
         })
-        with st.spinner("正在思考中..."):
-            files_in_kb = st.session_state.knowledge_bases.get(selected_kb, [])
-            file_info = f" (参考了{len(files_in_kb)}个文件)" if files_in_kb else " (当前知识库为空)"
-            ai_response = f"这是关于 '{user_input}' 在知识库 '{selected_kb}'{file_info} 中的回答。"
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": ai_response,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-        st.session_state.user_question = ""
+        
+        # 2. 模拟 AI 回答
+        selected_kb = st.session_state.selected_kb
+        files_in_kb = st.session_state.knowledge_bases.get(selected_kb, [])
+        file_info = f" (参考了{len(files_in_kb)}个文件)" if files_in_kb else " (当前知识库为空)"
+        
+        ai_response = f"这是关于 '{query.strip()}' 在知识库 '{selected_kb}'{file_info} 中的回答。"
+        
+        st.session_state.chat_history.append({
+            "role": "assistant",
+            "content": ai_response,
+            "timestamp": datetime.now().strftime("%H:%M")
+        })
 
-
-# 删除相关函数
 def request_delete(delete_type, kb_name, file_name=None):
     st.session_state.pending_delete = {'type': delete_type, 'kb_name': kb_name, 'file_name': file_name}
 
-
 def confirm_delete():
-    """确认删除"""
     if st.session_state.pending_delete:
         delete_info = st.session_state.pending_delete
-
-        if delete_info['type'] == 'file':
-            kb_name = delete_info['kb_name']
-            file_name = delete_info['file_name']
-            if kb_name in st.session_state.knowledge_bases:
-                if file_name in st.session_state.knowledge_bases[kb_name]:
+        try:
+            if delete_info['type'] == 'file':
+                kb_name = delete_info['kb_name']
+                file_name = delete_info['file_name']
+                if kb_name in st.session_state.knowledge_bases and file_name in st.session_state.knowledge_bases[kb_name]:
                     st.session_state.knowledge_bases[kb_name].remove(file_name)
-
-        elif delete_info['type'] == 'kb':
-            kb_name = delete_info['kb_name']
-            if kb_name in st.session_state.knowledge_bases and kb_name != "默认知识库":
-                del st.session_state.knowledge_bases[kb_name]
-                if st.session_state.selected_kb == kb_name:
-                    st.session_state.selected_kb = "默认知识库"
-
-        # 清除待删除状态
-        st.session_state.pending_delete = None
-
+                    st.toast(f"✅ 文件 '{file_name}' 已删除")
+            elif delete_info['type'] == 'kb':
+                kb_name = delete_info['kb_name']
+                if kb_name in st.session_state.knowledge_bases and kb_name != "默认知识库":
+                    del st.session_state.knowledge_bases[kb_name]
+                    if st.session_state.selected_kb == kb_name:
+                        st.session_state.selected_kb = "默认知识库"
+                    st.toast(f"✅ 知识库 '{kb_name}' 已删除")
+        except:
+            st.error("❌ 删除失败")
+        finally:
+            st.session_state.pending_delete = None
 
 def cancel_delete():
     st.session_state.pending_delete = None
 
+def render_message(role, content, timestamp):
+    """渲染单条消息"""
+    if role == "user":
+        avatar = "👤"
+        container_class = "user-message"
+        bubble_class = "user-bubble"
+        timestamp_class = "user-timestamp"
+    else:
+        avatar = "🤖"
+        container_class = "assistant-message"
+        bubble_class = "assistant-bubble"
+        timestamp_class = "assistant-timestamp"
+    
+    return f"""
+    <div class="message-container {container_class}">
+        <div class="message-avatar {role}-avatar">
+            {avatar}
+        </div>
+        <div class="message-bubble {bubble_class}">
+            <div class="message-content">{content}</div>
+            <div class="message-timestamp {timestamp_class}">
+                <span>{role if role == 'user' else 'AI'}</span>
+                <span>•</span>
+                <span>{timestamp}</span>
+            </div>
+        </div>
+    </div>
+    """
 
-# ===================== 完美修复版：自动滑到底部 + 可手动查看历史消息 =====================
-chat_html = """
-<div style="height: 580px; overflow-y: auto; border: 1px solid #e0e0e0; 
-            border-radius: 10px; padding: 20px; 
-            background-color: #f9f9f9;" id="chat-container">
-"""
-if st.session_state.chat_history:
-    for chat in st.session_state.chat_history:
-        if chat["role"] == "user":
-            chat_html += f"""
-            <div style="background-color: #DCF8C6; padding:10px; border-radius:8px; 
-                        margin:8px 0; max-width:80%; margin-left:auto;">
-                <strong></strong> {chat['content']}<br>
-                <small style="color:#666;">{chat['timestamp']}</small>
-            </div>"""
-        else:
-            chat_html += f"""
-            <div style="background-color: white; padding:10px; border-radius:8px; 
-                        margin:8px 0; max-width:80%; margin-right:auto; border:1px solid #eee;">
-                <strong>助手:</strong> {chat['content']}<br>
-                <small style="color:#666;">{chat['timestamp']}</small>
-            </div>"""
-chat_html += """
-</div>
-<script>
-    // 核心修复：等页面完全渲染后再平滑滚动到底部
-    window.addEventListener('load', function() {
-        const chatContainer = document.getElementById('chat-container');
-        // 强制滚动到最底部
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-    });
-</script>
-"""
-
-import streamlit.components.v1 as components
-
-# 保持开启滚动，高度匹配内部容器
-components.html(chat_html, height=500, scrolling=True)
-
-# 知识库选择
-kb_list = list(st.session_state.knowledge_bases.keys())
-if kb_list:
-    selected_kb = st.selectbox("💬选择知识库进行提问",
-                               options=kb_list,
-                               index=kb_list.index(st.session_state.selected_kb),
-                               key="kb_selector",
-                               width= 300
-                               )
-    if selected_kb != st.session_state.selected_kb:
-        st.session_state.selected_kb = selected_kb
-
-# 固定底部输入区域
-st.markdown("""
-<style>
-.fixed-input-area {position: fixed; bottom: 0; left: 0; right: 0; background: white; padding:20px; box-shadow:0 -2px 10px rgba(0,0,0,0.1); z-index:999}
-</style>
-<div class="fixed-input-area">
-""", unsafe_allow_html=True)
-
-input_col, button_col = st.columns([5, 1])
-with input_col:
-    st.text_input("输入问题", key="user_question", placeholder="请输入问题", label_visibility="collapsed",
-                  on_change=send_message)
-with button_col:
-    st.button("📤 发送", use_container_width=True, on_click=send_message)
-
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("🗑️ 清空对话", use_container_width=True):
-        st.session_state.chat_history = []
-with col2:
-    if st.button("📥 导出历史", use_container_width=True):
-        if st.session_state.chat_history:
-            df = pd.DataFrame(st.session_state.chat_history)
-            st.download_button("下载CSV", df.to_csv(index=False),
-                               f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-        else:
-            st.warning("无历史")
-st.markdown("</div>", unsafe_allow_html=True)
-
-# 底部信息
-st.markdown("---")
-c1, c2, c3, c4 = st.columns([3, 1, 3, 3])
-with c2:
-    st.markdown(
-        "[![GitHub](https://img.shields.io/badge/GitHub-View_on_GitHub-blue?logo=GitHub)](https://github.com/Dreamt0511/EchoMind)")
-with c3:
-    st.markdown("<div style='text-align:center;color:#666'>个性化问答助手-EchoMind | 作者 Dreamt</div>",
-                unsafe_allow_html=True)
-
-# 侧边栏
+# ==========================================
+# 4. 侧边栏 UI
+# ==========================================
 with st.sidebar:
-    st.markdown("<h1 style='text-align:center'>EchoMind</h1>", unsafe_allow_html=True)
-    st.markdown("<h1 style='text-align: center;'>个性化问答助手</h1>", unsafe_allow_html=True)
-    st.markdown("### 知识库管理")
+    st.markdown("<h2 style='text-align: center; color: #2C3E50;'>EchoMind</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #7F8C8D; margin-top:-10px;'>个性化智能问答助手</p>", unsafe_allow_html=True)
+    st.divider()
+    
+    # 统计卡片
+    total_kbs = len(st.session_state.knowledge_bases)
     total_files = sum(len(files) for files in st.session_state.knowledge_bases.values())
-    st.info(f"知识库数量: {len(st.session_state.knowledge_bases)}")
-    st.info(f"总文件数: {total_files}")
-    # 创建新知识库
+    c1, c2 = st.columns(2)
+    with c1: st.markdown(f"<div class='info-card'>📚 知识库: {total_kbs}</div>", unsafe_allow_html=True)
+    with c2: st.markdown(f"<div class='info-card'>📄 总文件: {total_files}</div>", unsafe_allow_html=True)
+
+    # 创建知识库
     with st.expander("➕ 创建新知识库", expanded=False):
-        new_kb_name = st.text_input("知识库名称", key="new_kb_name")
-        if st.button("创建知识库", use_container_width=True):
+        new_kb_name = st.text_input("", placeholder="输入名称", key="sidebar_new_kb_name", label_visibility="collapsed")
+        if st.button("创建", use_container_width=True):
             if new_kb_name and new_kb_name not in st.session_state.knowledge_bases:
                 st.session_state.knowledge_bases[new_kb_name] = []
-                st.success(f"知识库 '{new_kb_name}' 创建成功！")
-            elif new_kb_name in st.session_state.knowledge_bases:
-                st.error("知识库名称已存在！")
-            else:
-                st.error("请输入知识库名称！")
+                st.success(f"✅ '{new_kb_name}' 创建成功")
+                st.rerun()
+            elif new_kb_name: st.warning("⚠️ 已存在")
 
+    # 删除确认区域
     if st.session_state.pending_delete:
         info = st.session_state.pending_delete
-        if info['type'] == 'file':
-            st.warning(f"删除文件 {info['file_name']}？")
-        else:
-            st.error(f"删除知识库 {info['kb_name']}？")
+        msg = f"确认删除{info['kb_name']}" + (f"中的文件 {info['file_name']}？" if info['file_name'] else "？此操作不可撤销！")
+        st.markdown(f"<div class='confirm-delete-area'>⚠️ {msg}</div>", unsafe_allow_html=True)
         co1, co2 = st.columns(2)
-        with co1:
-            st.button("✅ 确认", on_click=confirm_delete)
-        with co2:
-            st.button("❌ 取消", on_click=cancel_delete)
+        with co1: st.button("✅ 确认", on_click=confirm_delete, use_container_width=True, key="conf_del_btn")
+        with co2: st.button("❌ 取消", on_click=cancel_delete, use_container_width=True, key="canc_del_btn")
 
-    st.markdown("---")
+    st.divider()
 
-    # 显示所有知识库及其文件
-    st.markdown("### 知识库列表")
-    # 为每个知识库创建可展开的区域
+    # 知识库列表管理
+    st.markdown("### 📚 知识库管理")
     for kb_name, files in st.session_state.knowledge_bases.items():
-        with st.expander(f"📚 {kb_name} ({len(files)}个文件)", expanded=False):
-            # 显示该知识库下的文件列表
+        is_default = (kb_name == '默认知识库')
+        with st.expander(f"📁 {kb_name} ({len(files)})", expanded=(kb_name == st.session_state.selected_kb)):
+            # 文件列表
             if files:
                 for i, file_name in enumerate(files):
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.text(f"📄 {file_name}")
-                    with col2:
-                        # 删除单个文件的按钮
-                        if st.button("🗑️", key=f"del_file_{kb_name}_{i}",
-                                     help=f"删除{file_name}",
-                                     on_click=request_delete,
-                                     args=('file', kb_name, file_name)):
-                            pass
+                    f1, f2 = st.columns([6, 1])
+                    with f1: st.markdown(f"<div class='file-item'>📄 {file_name}</div>", unsafe_allow_html=True)
+                    with f2: st.button("🗑️", key=f"del_f_{kb_name}_{i}", help="删除文件", on_click=request_delete, args=('file', kb_name, file_name))
             else:
-                st.info("该知识库暂无文件")
+                st.caption("📭 暂无文件")
 
-            # 向该知识库上传文件
-            st.markdown("---")
-            uploaded_file = st.file_uploader(
-                f"上传文件到 {kb_name}",
-                type=['txt', 'pdf', 'docx', 'md', 'csv'],
-                key=f"uploader_{kb_name}",
-                label_visibility="collapsed"
-            )
-            # 文件上传说明
-            st.info("📌 支持的文档类型：TXT, PDF, DOCX, Markdown, CSV (单个文件不超过200MB)")
-            if uploaded_file is not None:
+            # 上传文件
+            uploaded_file = st.file_uploader("", type=['txt', 'pdf', 'docx', 'md', 'csv'], key=f"uploader_{kb_name}", label_visibility="collapsed")
+            if uploaded_file:
                 if uploaded_file.name not in st.session_state.knowledge_bases[kb_name]:
                     st.session_state.knowledge_bases[kb_name].append(uploaded_file.name)
-                    st.success(f"文件 {uploaded_file.name} 上传到 {kb_name} 成功！")
-                else:
-                    st.warning("文件已存在于该知识库中！")
+                    st.toast(f"✅ {uploaded_file.name} 上传成功")
+                    st.rerun()
+                else: st.warning("⚠️ 文件已存在")
 
-            # 如果不是默认知识库，显示删除知识库按钮
-            if kb_name != "默认知识库":
-                if st.button(f"🗑️ 删除整个知识库", key=f"del_kb_{kb_name}",
-                             use_container_width=True,
-                             on_click=request_delete,
-                             args=('kb', kb_name)):
-                    pass
+            # 删除知识库
+            if not is_default:
+                st.button(f"🗑️ 删除知识库", key=f"del_kb_{kb_name}", use_container_width=True, on_click=request_delete, args=('kb', kb_name))
+    
+    # ----- D. 底部页脚 -----
+    st.divider()
+    foot_c1, foot_c2 = st.columns([1, 1])
+    with foot_c1:
+        st.markdown("<div style='text-align: left; color: #7F8C8D; font-size:0.8rem'>© Dreamt · EchoMind</div>", unsafe_allow_html=True)
+    with foot_c2:
+        st.markdown("""
+    <div style='text-align: right; font-size:0.8rem'>
+        <a href='https://github.com/Dreamt0511/EchoMind' target='_blank'>
+            <img src='https://img.shields.io/badge/GitHub-View_on_GitHub-blue?logo=GitHub' alt='GitHub'>
+        </a>
+    </div>
+    """, unsafe_allow_html=True)
+# ==========================================
+# 5. 主界面 UI
+# ==========================================
+# 标题区域
+# 标题区域 - 带3D高级动态机器人图标
+st.markdown("""
+    <style>
+    .main-header {
+        position: relative;
+        top: 35px;  /* 向下偏移30px */
+    }
+    .header-container {
+        height: 170px;  /* 设置容器高度 */
+        display: flex;
+        align-items: center;  /* 垂直居中内容 */
+    }
+    </style>
+    <div class="main-header">
+        <div class="header-container">
+            <div class="title-section">
+                <h1>EchoMind</h1>
+                <p class="subtitle">个性化智能问答助手</p>
+            </div>
+            <div class="robot-icon-container">
+                <div class="robot-3d">
+                    <div class="robot-sphere">
+                        <div class="robot-face">
+                            <div class="robot-visors">
+                                <div class="visor left-visor">
+                                    <div class="visor-glow"></div>
+                                </div>
+                                <div class="visor right-visor">
+                                    <div class="visor-glow"></div>
+                                </div>
+                            </div>
+                            <div class="robot-mouth">
+                                <div class="mouth-line"></div>
+                                <div class="mouth-dot"></div>
+                            </div>
+                        </div>
+                        <div class="robot-ring">
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                        </div>
+                    </div>
+                    <div class="robot-energy">
+                        <div class="energy-wave"></div>
+                        <div class="energy-wave"></div>
+                        <div class="energy-wave"></div>
+                    </div>
+                </div>
+                <div class="ai-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Active</span>
+                </div>
+            </div>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
 
-    st.markdown("---")
+st.divider()
 
-    st.markdown("### 🕒 历史对话")
-    if 'conversation_summaries' not in st.session_state:
-        st.session_state.conversation_summaries = []
+# ----- A. 知识库选择 -----
+kb_list = list(st.session_state.knowledge_bases.keys())
+col_sel1, col_sel2 = st.columns([1, 1])
+with col_sel1:
+    selected_kb = st.selectbox(
+        label= "当前对话知识库：",
+        options=kb_list,
+        index=kb_list.index(st.session_state.selected_kb) if st.session_state.selected_kb in kb_list else 0,
+        key="kb_selector"
+        )
+    st.session_state.selected_kb = selected_kb
+with col_sel2:
+    st.markdown(f"<div style='line-height:40px; text-align:center; background:rgba(255,255,255,0.5); border-radius:10px; font-size:0.9rem;'>📁 {len(st.session_state.knowledge_bases.get(selected_kb, []))} 文件</div>", unsafe_allow_html=True)
 
+st.divider()
 
-    def summary():
-        if st.session_state.chat_history:
-            s = st.session_state.chat_history[0]['content'][:20]
-            return f"{datetime.now().strftime('%H:%M')} | {s}"
-        return "空"
+# ----- B. 聊天记录区域 -----
+chat_container = st.container()
 
-
-    if st.session_state.conversation_summaries:
-        st.selectbox("记录", ["当前：" + summary()] + st.session_state.conversation_summaries)
+with chat_container:
+    if not st.session_state.chat_history:
+        st.info("👋 你好！我是 EchoMind AI 助手。请在下方输入问题，或者在左侧管理知识库。")
     else:
-        st.selectbox("记录", ["无"], disabled=True)
+        # 关键修复：逐条渲染，避免 HTML 累积导致转义问题
+        for chat in st.session_state.chat_history:
+            message_html = render_message(chat["role"], chat["content"], chat["timestamp"])
+            st.markdown(message_html, unsafe_allow_html=True)
+
+# ----- C. 底部功能区域 -----
+# 功能按钮
+feat_col1, feat_col2, feat_col3 = st.columns([2, 2, 3])
+with feat_col1:
+    st.markdown('<div class="action-btn">', unsafe_allow_html=True)
+    if st.button("🗑️ 清空", use_container_width=True, key="clear_chat"):
+        st.session_state.chat_history = []
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+with feat_col2:
+    st.markdown('<div class="action-btn">', unsafe_allow_html=True)
+    if st.session_state.chat_history:
+        df = pd.DataFrame(st.session_state.chat_history)
+        st.download_button("📥 导出", df.to_csv(index=False), f"chat_{datetime.now().strftime('%Y%m%d')}.csv", mime='text/csv', use_container_width=True)
+    else:
+        st.button("📥 导出", disabled=True, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# 聊天输入框
+st.chat_input("请输入问题...", key="user_query_input", on_submit=handle_send)
