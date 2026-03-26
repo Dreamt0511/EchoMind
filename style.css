@@ -48,12 +48,15 @@
     position: relative;
     cursor: pointer;
     transition: transform 0.3s ease;
-    margin-top: 30px;  /* 向下移动30px */
+    margin-top: 10px;  /* 向下移动30px */
+    margin-left:-10px; /* 向右移动50px，可以根据需要调整数值 */
     margin-bottom: 5px;
+    transform: scale(0.7);  /* 整体放大1.2倍，包括所有子元素 */
+    transform-origin: center;  /* 设置缩放中心点为中心 */
 }
 
 .robot-icon-container:hover {
-    transform: scale(1.05);
+    transform: scale(0.8);
 }
 
 /* 3D机器人主体 */
@@ -374,6 +377,7 @@
     
     .robot-icon-container {
         margin-top: 10px;
+        margin-left: 0px;
     }
 }
 /* ----- 全局布局优化 ----- */

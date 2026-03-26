@@ -3,13 +3,26 @@ import pandas as pd
 from datetime import datetime
 import os
 
+
+# 修复：只隐藏右上角的菜单按钮，保留侧边栏的控制功能
+hide_streamlit_style = """
+<style>
+/* 只隐藏右上角的菜单按钮，保留侧边栏功能 */
+#MainMenu {visibility: hidden;}
+/* 隐藏footer */
+footer {visibility: hidden;}
+/* 保留header，不隐藏，这样才能看到侧边栏控制按钮 */
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 # ==========================================
 # 1. 页面配置 & 响应式 CSS
 # ==========================================
 st.set_page_config(
     page_title="EchoMind - 个性化AI问答助手",
     layout="wide",
-    initial_sidebar_state="auto"
+    initial_sidebar_state="auto"  # auto 会让侧边栏默认展开，用户可以手动收起
 )
 
 # 2. 加载外部 CSS 文件
@@ -27,7 +40,7 @@ def load_css():
         return False
 
 # 加载 CSS
-CUSTOM_CSS =load_css()
+CUSTOM_CSS = load_css()
 
 # ==========================================
 # 2. 初始化 Session State
@@ -130,9 +143,66 @@ def render_message(role, content, timestamp):
 # 4. 侧边栏 UI
 # ==========================================
 with st.sidebar:
-    st.markdown("<h2 style='text-align: center; color: #2C3E50;'>EchoMind</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #7F8C8D; margin-top:-10px;'>个性化智能问答助手</p>", unsafe_allow_html=True)
-    st.divider()
+        
+    # 标题区域 - 带3D高级动态机器人图标
+    st.markdown("""
+    <style>
+    .main-header {
+        position: relative;
+        top: -30px;  /* 向下偏移30px */
+    }
+    .header-container {
+        height: 170px;  /* 设置容器高度 */
+        display: flex;
+        align-items: center;  /* 垂直居中内容 */
+    }
+    </style>
+    <div class="main-header">
+        <div class="header-container">
+            <div class="title-section">
+                <h1>EchoMind</h1>
+                <p class="subtitle">个性化智能问答助手</p>
+            </div>
+            <div class="robot-icon-container">
+                <div class="robot-3d">
+                    <div class="robot-sphere">
+                        <div class="robot-face">
+                            <div class="robot-visors">
+                                <div class="visor left-visor">
+                                    <div class="visor-glow"></div>
+                                </div>
+                                <div class="visor right-visor">
+                                    <div class="visor-glow"></div>
+                                </div>
+                            </div>
+                            <div class="robot-mouth">
+                                <div class="mouth-line"></div>
+                                <div class="mouth-dot"></div>
+                            </div>
+                        </div>
+                        <div class="robot-ring">
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                            <div class="ring-particle"></div>
+                        </div>
+                    </div>
+                    <div class="robot-energy">
+                        <div class="energy-wave"></div>
+                        <div class="energy-wave"></div>
+                        <div class="energy-wave"></div>
+                    </div>
+                </div>
+                <div class="ai-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Active</span>
+                </div>
+            </div>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
     
     # 统计卡片
     total_kbs = len(st.session_state.knowledge_bases)
@@ -202,87 +272,38 @@ with st.sidebar:
         </a>
     </div>
     """, unsafe_allow_html=True)
+
 # ==========================================
 # 5. 主界面 UI
 # ==========================================
-# 标题区域
-# 标题区域 - 带3D高级动态机器人图标
-st.markdown("""
-    <style>
-    .main-header {
-        position: relative;
-        top: 35px;  /* 向下偏移30px */
-    }
-    .header-container {
-        height: 170px;  /* 设置容器高度 */
-        display: flex;
-        align-items: center;  /* 垂直居中内容 */
-    }
-    </style>
-    <div class="main-header">
-        <div class="header-container">
-            <div class="title-section">
-                <h1>EchoMind</h1>
-                <p class="subtitle">个性化智能问答助手</p>
-            </div>
-            <div class="robot-icon-container">
-                <div class="robot-3d">
-                    <div class="robot-sphere">
-                        <div class="robot-face">
-                            <div class="robot-visors">
-                                <div class="visor left-visor">
-                                    <div class="visor-glow"></div>
-                                </div>
-                                <div class="visor right-visor">
-                                    <div class="visor-glow"></div>
-                                </div>
-                            </div>
-                            <div class="robot-mouth">
-                                <div class="mouth-line"></div>
-                                <div class="mouth-dot"></div>
-                            </div>
-                        </div>
-                        <div class="robot-ring">
-                            <div class="ring-particle"></div>
-                            <div class="ring-particle"></div>
-                            <div class="ring-particle"></div>
-                            <div class="ring-particle"></div>
-                            <div class="ring-particle"></div>
-                            <div class="ring-particle"></div>
-                        </div>
-                    </div>
-                    <div class="robot-energy">
-                        <div class="energy-wave"></div>
-                        <div class="energy-wave"></div>
-                        <div class="energy-wave"></div>
-                    </div>
-                </div>
-                <div class="ai-status">
-                    <span class="status-dot"></span>
-                    <span class="status-text">Active</span>
-                </div>
-            </div>
-        </div>
-    </div>
-""", unsafe_allow_html=True)
-
 st.divider()
-
-# ----- A. 知识库选择 -----
+# 只调用一次 columns，设置合适的比例
 kb_list = list(st.session_state.knowledge_bases.keys())
-col_sel1, col_sel2 = st.columns([1, 1])
+col_sel1, col_sel2 = st.columns([1, 1])  # 第一列占1份，第二列占1份
+
 with col_sel1:
     selected_kb = st.selectbox(
-        label= "当前对话知识库：",
+        label="当前对话知识库：",
         options=kb_list,
         index=kb_list.index(st.session_state.selected_kb) if st.session_state.selected_kb in kb_list else 0,
         key="kb_selector"
-        )
+    )
     st.session_state.selected_kb = selected_kb
-with col_sel2:
-    st.markdown(f"<div style='line-height:40px; text-align:center; background:rgba(255,255,255,0.5); border-radius:10px; font-size:0.9rem;'>📁 {len(st.session_state.knowledge_bases.get(selected_kb, []))} 文件</div>", unsafe_allow_html=True)
 
-st.divider()
+with col_sel2:
+    # 添加 margin-top 使 div 与 selectbox 的标签对齐
+    st.markdown(f"""
+        <div style='
+            line-height:40px; 
+            text-align:center; 
+            background:rgba(255,255,255,0.5); 
+            border-radius:10px; 
+            font-size:0.9rem;
+            margin-top: 28px;
+        '>
+        📁 {len(st.session_state.knowledge_bases.get(selected_kb, []))} 文件
+        </div>
+    """, unsafe_allow_html=True)
 
 # ----- B. 聊天记录区域 -----
 chat_container = st.container()
@@ -297,22 +318,5 @@ with chat_container:
             st.markdown(message_html, unsafe_allow_html=True)
 
 # ----- C. 底部功能区域 -----
-# 功能按钮
-feat_col1, feat_col2, feat_col3 = st.columns([2, 2, 3])
-with feat_col1:
-    st.markdown('<div class="action-btn">', unsafe_allow_html=True)
-    if st.button("🗑️ 清空", use_container_width=True, key="clear_chat"):
-        st.session_state.chat_history = []
-        st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-with feat_col2:
-    st.markdown('<div class="action-btn">', unsafe_allow_html=True)
-    if st.session_state.chat_history:
-        df = pd.DataFrame(st.session_state.chat_history)
-        st.download_button("📥 导出", df.to_csv(index=False), f"chat_{datetime.now().strftime('%Y%m%d')}.csv", mime='text/csv', use_container_width=True)
-    else:
-        st.button("📥 导出", disabled=True, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
 # 聊天输入框
 st.chat_input("请输入问题...", key="user_query_input", on_submit=handle_send)
