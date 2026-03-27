@@ -5,7 +5,7 @@ parent_chunk_overlap = 200
 child_chunk_size = 200
 child_chunk_overlap = 50
 
-separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", ""],
+separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", ""]
 
 
 
