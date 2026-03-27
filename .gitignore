@@ -1,0 +1,26 @@
+# 忽略所有 __pycache__ 目录
+__pycache__/
+
+# 忽略 IDE 配置目录
+.idea/
+.vscode/
+
+# 忽略虚拟环境
+.venv/
+
+# 忽略其他项目目录
+ECHOMIND/
+黑马的RAN项目/
+RAG基础知识/
+SuperMew-backend/
+
+# 忽略 backend 中的 .env 文件
+backend/.env
+
+# 确保 backend、frontend、data 目录被跟踪（不忽略）
+!backend/
+!frontend/
+!data/
+
+# 确保 README.md 被跟踪
+!README.md
