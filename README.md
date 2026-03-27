@@ -15,5 +15,3 @@
 | `postgresql_crud.py` | PostgreSQL CRUD 操作 |
 
 
-依赖项安装
-pip install "langchain-unstructured[local]"

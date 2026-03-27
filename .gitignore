@@ -8,6 +8,7 @@ __pycache__/
 # 忽略虚拟环境
 .venv/
 
+
 # 忽略其他项目目录
 ECHOMIND/
 黑马的RAN项目/
@@ -24,3 +25,6 @@ backend/.env
 
 # 确保 README.md 被跟踪
 !README.md
+
+#忽略data文件夹
+.data/
