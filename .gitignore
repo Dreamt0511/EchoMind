@@ -27,4 +27,4 @@ backend/.env
 !README.md
 
 #忽略data文件夹
-.data/
+data
