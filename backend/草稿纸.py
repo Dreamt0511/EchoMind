@@ -1,25 +1,19 @@
-from minio import Minio
-import os
-import io
+from pymilvus import MilvusClient
 
-# 初始化客户端
-client = Minio(
-    "localhost:9000",
-    access_key="Dreamt",
-    secret_key="zfl123456",
-    secure=False
-)
+client = MilvusClient(
+    uri= "https://in03-aa3b3c45f217386.serverless.aws-eu-central-1.cloud.zilliz.com",
+    token = "db_aa3b3c45f217386:Zfl123456"
+   )
 
-# 上传文件 - 直接存储
-with open("./data/习概小组ppt文案.docx", "rb") as file:
-    data = file.read()
-    
-client.put_object(
-    bucket_name="echomind-uploads",
-    object_name="my-first-file.docx",  # 文件名
-    data=io.BytesIO(data),
-    length=len(data),
-    content_type="application/docx"
-)
+databases = client.list_databases()
+print("数据库列表:", databases)
 
-print("✅ 文件已存储到 MinIO！")
+#获取集合列表
+collections = client.list_collections()
+print("集合列表:", collections)
+
+collection = collections[0]
+
+#获取分区列表
+partitions = client.list_partitions(collection_name=collection)
+print("分区列表:", partitions)

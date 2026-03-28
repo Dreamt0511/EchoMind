@@ -33,13 +33,14 @@ upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 async def file_upload(
     request: Request,
     file: UploadFile = File(...),
+    knowledge_base_id: str = File(...),
     background_tasks: BackgroundTasks = None
 ):
     """上传文档并进行embedding,支持文件去重"""
-    
+
     # 初始化变量，避免作用域问题
     temp_file_path = None
-    
+
     async with upload_semaphore:
         try:
             filename = file.filename
@@ -52,18 +53,20 @@ async def file_upload(
 
             # 修复：检查文件大小，处理 file.size 为 None 的情况
             if file.size is not None and file.size > MAX_FILE_SIZE:
-                raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_FILE_SIZE // (1024*1024)}MB")
-            
+                raise HTTPException(
+                    status_code=413, detail=f"文件过大，最大支持 {MAX_FILE_SIZE // (1024*1024)}MB")
+
             # 检查客户端连接状态
             if await request.is_disconnected():
                 raise HTTPException(status_code=400, detail="客户端已断开连接")
-            
+
             # 创建哈希对象和临时文件处理对象
             sha256 = hashlib.sha256()
             temp_processor = TempDocumentProcessor()
 
             # 修复：正确调用 uuid.uuid4()
-            temp_file_path = temp_processor.temp_dir / f"{uuid.uuid4()}_{filename}"
+            temp_file_path = temp_processor.temp_dir / \
+                f"{uuid.uuid4()}_{filename}"
 
             # 流式计算哈希，写入文件
             try:
@@ -72,23 +75,26 @@ async def file_upload(
                     while True:
                         # 检查客户端连接状态
                         if await request.is_disconnected():
-                            raise HTTPException(status_code=400, detail="客户端已断开连接")
-                        
+                            raise HTTPException(
+                                status_code=400, detail="客户端已断开连接")
+
                         chunk = await file.read(CHUNK_SIZE)
                         if not chunk:
                             break
-                        
+
                         total_size += len(chunk)
                         # 实时检查文件大小
                         if total_size > MAX_FILE_SIZE:
-                            raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_FILE_SIZE // (1024*1024)}MB")
-                        
+                            raise HTTPException(
+                                status_code=413, detail=f"文件过大，最大支持 {MAX_FILE_SIZE // (1024*1024)}MB")
+
                         sha256.update(chunk)
                         await temp_file.write(chunk)
-                    
+
                     file_hash = sha256.hexdigest()
-                    logger.info(f"文件上传完成: {filename}, 哈希: {file_hash[:16]}, 大小: {total_size} bytes")
-                    
+                    logger.info(
+                        f"文件上传完成: {filename}, 哈希: {file_hash[:16]}, 大小: {total_size} bytes")
+
             except Exception as e:
                 # 异常时清理临时文件
                 if temp_file_path and temp_file_path.exists():
@@ -115,21 +121,19 @@ async def file_upload(
                         temp_file_path.unlink()
                     except:
                         pass
-                
+
                 return DocumentUploadResponse(
                     filename=filename,
                     message="文件已存在，无需重复上传",
                     file_hash=file_hash,
+                    knowledge_base_id=knowledge_base_id
                     is_duplicate=True
                 )
-            
-            # 修复：添加文件哈希到存储，实现去重
-            hash_storage.add_file_hash(file_hash)
-            
+
             # 确保 background_tasks 不为 None
             if background_tasks is None:
                 background_tasks = BackgroundTasks()
-            
+
             document_instance = DocumentProcessor(hash_storage)
 
             # 将文档处理任务添加到后台（处理完成后会自动清理临时文件）
@@ -137,7 +141,8 @@ async def file_upload(
                 document_instance.process_document,
                 temp_file_path=temp_file_path,
                 filename=filename,
-                file_hash=file_hash
+                file_hash=file_hash,
+                knowledge_base_id=knowledge_base_id
             )
 
             # 立即返回
@@ -145,13 +150,15 @@ async def file_upload(
                 filename=filename,
                 message="文档已上传，正在后台处理中",
                 file_hash=file_hash,
+                knowledge_base_id=knowledge_base_id
                 is_duplicate=False
             )
 
         except HTTPException:
             raise
         except asyncio.CancelledError:
-            logger.warning(f"请求被取消: {filename if 'filename' in locals() else 'unknown'}")
+            logger.warning(
+                f"请求被取消: {filename if 'filename' in locals() else 'unknown'}")
             raise HTTPException(status_code=499, detail="客户端已取消请求")
         except Exception as e:
             logger.error(f"文件上传错误: {str(e)}", exc_info=True)
