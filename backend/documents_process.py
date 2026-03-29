@@ -1,6 +1,6 @@
 from langchain_community.document_loaders import Docx2txtLoader, PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from milvus_client import MilvusClient
+from milvus_client import AsyncMilvusClientWrapper
 import config
 from typing import List, Dict, Set
 import os
@@ -9,9 +9,9 @@ import uuid
 import hashlib
 import logging
 from pathlib import Path
+from postgresql_client import PostgreSQLParentClient
 logger = logging.getLogger(__name__)
-
-milvus_client = MilvusClient()
+import asyncio
 
 
 class HashStorage:
@@ -67,6 +67,13 @@ class HashStorage:
             self._save_hashes(self.files_hash_path, self.files_hash)
             logger.info(f"添加文件哈希: {file_hash[:16]}...")
 
+    def remove_file_hash(self, file_hash: str):
+        """删除文件哈希值"""
+        if file_hash in self.files_hash:
+            self.files_hash.discard(file_hash)
+            self._save_hashes(self.files_hash_path, self.files_hash)
+            logger.info(f"删除文件哈希: {file_hash[:16]}...")
+
     # 分块哈希管理
     def is_chunk_duplicate(self, chunk_hash: str) -> bool:
         """检查分块哈希是否已存在"""
@@ -114,8 +121,9 @@ class DocumentProcessor:
         self.temp_dir = os.getenv("TEMP_DIR", "/tmp")
         # 确保哈希存储可用
         self.hash_storage = hash_storage
+        self.milvus_client = AsyncMilvusClientWrapper(hash_storage)
 
-    def process_document(self,
+    async def process_document(self,
                          temp_file_path: Path,
                          filename: str,
                          file_hash: str,
@@ -128,7 +136,7 @@ class DocumentProcessor:
         :param knowledge_base_id 知识库id
         :return: 分块列表
         """
-        logger.info("="*20, f"开始进行文本分块{filename}", "="*20)
+        logger.info(f"{'='*20} 开始进行文本分块 {filename} {'='*20}")
 
         loader_mapping = {
             ".pdf": PyMuPDFLoader,
@@ -163,6 +171,25 @@ class DocumentProcessor:
             # 为每个父块生成id
             parent_chunk_id = str(uuid.uuid4())
 
+            #添加父块元数据
+            parent_chunk.metadata.update({
+                "file_name": filename,
+                "file_hash": file_hash,
+            })
+
+            # 插入父块到postgresql数据库
+            async with PostgreSQLParentClient(
+                dsn=os.getenv("DATABASE_URL"),
+                auto_create_db=True
+            ) as postgresql_client:
+                # 现在可以使用 postgresql_client 了
+                await postgresql_client.add_parent(
+                knowledge_base_id=knowledge_base_id,
+                parent_id=parent_chunk_id,
+                text=parent_chunk.page_content,
+                metadata=parent_chunk.metadata
+            )
+            
             # 再次分割成子块
             child_chunks = self.child_splitter.split_documents([parent_chunk])
 
@@ -176,7 +203,7 @@ class DocumentProcessor:
                     logger.debug(f"子块已存在，跳过: {child_chunk_hash[:16]}...")
                     continue
 
-                # 添加元数据
+                # 添加子块元数据
                 child_chunk.metadata.update({
                     "parent_id": parent_chunk_id,  # 父块ID
                     "parent_index": parent_index,
@@ -191,9 +218,9 @@ class DocumentProcessor:
                 # 记录子块哈希(存到本地文件)
                 self.hash_storage.add_chunk_hash(child_chunk_hash)
 
-        # 批量插入子块
+        # 批量插入子块到milvus数据库
         if all_chunks_with_ids:
-            milvus_client.add_chunks_batch(
+            await self.milvus_client.add_chunks_batch(
                 knowledge_base_id=knowledge_base_id,
                 chunks_with_ids=all_chunks_with_ids
             )

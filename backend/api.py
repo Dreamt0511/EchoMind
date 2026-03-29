@@ -126,8 +126,8 @@ async def file_upload(
                     filename=filename,
                     message="文件已存在，无需重复上传",
                     file_hash=file_hash,
-                    knowledge_base_id=knowledge_base_id
-                    is_duplicate=True
+                    knowledge_base_id=knowledge_base_id,
+                    is_duplicate=True,
                 )
 
             # 确保 background_tasks 不为 None
@@ -150,7 +150,7 @@ async def file_upload(
                 filename=filename,
                 message="文档已上传，正在后台处理中",
                 file_hash=file_hash,
-                knowledge_base_id=knowledge_base_id
+                knowledge_base_id=knowledge_base_id,
                 is_duplicate=False
             )
 
