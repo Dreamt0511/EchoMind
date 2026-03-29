@@ -12,6 +12,9 @@ from pathlib import Path
 from postgresql_client import PostgreSQLParentClient
 logger = logging.getLogger(__name__)
 import asyncio
+import requests
+import json
+from http import HTTPStatus
 
 
 class HashStorage:
@@ -180,6 +183,9 @@ class DocumentProcessor:
 
         all_chunks_with_ids = []
 
+        # 准备批量插入postgresql数据
+        parent_data_list = []
+
         for parent_index, parent_chunk in enumerate(parent_chunks):
             # 为每个父块生成id
             parent_chunk_id = str(uuid.uuid4())
@@ -190,18 +196,13 @@ class DocumentProcessor:
                 "file_hash": file_hash,
             })
 
-            # 插入父块到postgresql数据库
-            async with PostgreSQLParentClient(
-                dsn=os.getenv("DATABASE_URL"),
-                auto_create_db=True
-            ) as postgresql_client:
-                # 现在可以使用 postgresql_client 了
-                await postgresql_client.add_parent(
-                knowledge_base_id=knowledge_base_id,
-                parent_id=parent_chunk_id,
-                text=parent_chunk.page_content,
-                metadata=parent_chunk.metadata
-            )
+            #记录当前父块数据
+            parent_data_list.append({
+                "parent_id": parent_chunk_id,
+                "knowledge_base_id": knowledge_base_id,
+                "text": parent_chunk.page_content,
+                "metadata": parent_chunk.metadata
+            })
             
             # 再次分割成子块
             child_chunks = self.child_splitter.split_documents([parent_chunk])
@@ -239,13 +240,62 @@ class DocumentProcessor:
                 chunks_with_ids=all_chunks_with_ids
             )
 
-            logger.info(
-                f"完成处理: 文件={filename}, 父块数={len(parent_chunks)}, 子块数={len(all_chunks_with_ids)}")
+        # 批量插入 PostgreSQL（一次连接）
+        async with PostgreSQLParentClient(...) as postgresql_client:
+            await postgresql_client.add_parents_batch(parent_data_list)
+
+
+        logger.info(
+            f"完成处理: 文件={filename}, 父块数={len(parent_chunks)}, 子块数={len(all_chunks_with_ids)}")
 
         # 记录文件哈希
         self.hash_storage.add_file_hash(file_hash)
-        #清理临时文件
 
+        #清理临时文件
         tempProcessor = TempDocumentProcessor()
         tempProcessor.delete_temp_file(temp_file_path)
 
+
+
+async def rerank_documents(query: str, documents: list, top_n=5):
+    """
+    一个通用的重排序API调用模板
+    """
+    rerank_model = os.getenv('RERANK_MODEL', 'qwen3-rerank')
+    api_key = os.getenv('DASHSCOPE_API_KEY')
+    if not api_key:
+        print("错误: 请先在环境变量中设置 DASHSCOPE_API_KEY")
+        return None
+        
+    # 官方文档中的API地址和模型名称
+    url = os.getenv('RERANK_URL')
+    
+    # 请求头
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # 请求体
+    payload = payload = {
+        "model": rerank_model,
+        "input": {  # 必须包在 input 里面！
+            "query": query,
+            "documents": documents
+        },
+        "parameters": {  # 必须包在 parameters 里面！
+            "top_n": top_n,
+            "return_documents": True
+        }
+    }
+    # 发送请求
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == HTTPStatus.OK:
+            return response.json()
+        else:
+            logger.error(f"API 请求失败: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"请求发生异常: {e}")
+        raise False

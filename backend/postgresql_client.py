@@ -55,7 +55,7 @@ class PostgreSQLParentClient:
                  auto_create_db: bool = True):
         """
         初始化 PostgreSQL 客户端
-        
+
         Args:
             dsn: 数据库连接字符串，如果不提供则从环境变量 DATABASE_URL 读取
             min_size: 连接池最小连接数
@@ -64,8 +64,9 @@ class PostgreSQLParentClient:
         """
         self.dsn = dsn or os.getenv("DATABASE_URL")
         if not self.dsn:
-            raise ValueError("DSN must be provided or set in DATABASE_URL environment variable")
-        
+            raise ValueError(
+                "DSN must be provided or set in DATABASE_URL environment variable")
+
         self.min_size = min_size
         self.max_size = max_size
         self.auto_create_db = auto_create_db
@@ -101,21 +102,21 @@ class PostgreSQLParentClient:
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     );
-                    
+
                     -- 单列索引：加速按知识库查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_kb 
+                    CREATE INDEX IF NOT EXISTS idx_parent_kb
                     ON parent_documents(knowledge_base_id);
-                    
+
                     -- 单列索引：加速按时间查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_created 
+                    CREATE INDEX IF NOT EXISTS idx_parent_created
                     ON parent_documents(created_at);
-                    
+
                     -- 复合索引：加速按知识库+时间排序查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_kb_created 
+                    CREATE INDEX IF NOT EXISTS idx_parent_kb_created
                     ON parent_documents(knowledge_base_id, created_at DESC);
-                    
+
                     -- GIN索引：加速JSONB字段内部查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_metadata_gin 
+                    CREATE INDEX IF NOT EXISTS idx_parent_metadata_gin
                     ON parent_documents USING gin(metadata);
                 """)
 
@@ -124,11 +125,6 @@ class PostgreSQLParentClient:
         except Exception as e:
             logger.error(f"Failed to initialize PostgreSQL client: {e}")
             raise
-
-    async def get_parent(self, parent_id: str) -> Optional[ParentDocument]:
-        """获取单个父块"""
-        results = await self.get_parents([parent_id])
-        return results[0] if results else None
 
     async def get_parents(self, parent_ids: List[str]) -> List[ParentDocument]:
         """批量获取父块"""
@@ -145,6 +141,7 @@ class PostgreSQLParentClient:
                     FROM parent_documents
                     WHERE parent_id = ANY($1::text[])
                 """, parent_ids)
+                #::text[]：把参数强制转换为文本数组
 
                 return [
                     ParentDocument(
@@ -160,7 +157,6 @@ class PostgreSQLParentClient:
         except Exception as e:
             logger.error(f"Error getting parents: {e}")
             raise
-
 
     async def delete_parent(self, parent_id: str) -> bool:
         """删除父块"""
@@ -193,10 +189,11 @@ class PostgreSQLParentClient:
                 return int(result.split()[-1]) if result.startswith("DELETE ") else 0
 
         except Exception as e:
-            logger.error(f"Error deleting knowledge base {knowledge_base_id}: {e}")
+            logger.error(
+                f"Error deleting knowledge base {knowledge_base_id}: {e}")
             raise
 
-    async def delete_all_file(self,knowledge_base_id: str,file_hash: str) -> int:
+    async def delete_all_file(self, knowledge_base_id: str, file_hash: str) -> int:
         """
         删除指定知识库中指定文件的所有父块（通过 metadata 中的 file_hash）
         Args:
@@ -212,48 +209,49 @@ class PostgreSQLParentClient:
             async with self.pool.acquire() as conn:
                 # 同时使用 knowledge_base_id 和 file_hash 条件删除
                 result = await conn.execute("""
-                    DELETE FROM parent_documents 
-                    WHERE knowledge_base_id = $1 
+                    DELETE FROM parent_documents
+                    WHERE knowledge_base_id = $1
                     AND metadata->>'file_hash' = $2
                 """, knowledge_base_id, file_hash)
-                
+
                 # 解析删除的行数
-                deleted_count = int(result.split()[-1]) if result.startswith("DELETE ") else 0
-                
+                deleted_count = int(
+                    result.split()[-1]) if result.startswith("DELETE ") else 0
+
                 if deleted_count > 0:
-                    logger.info(f"Deleted {deleted_count} parent documents in the knowledge_base: {knowledge_base_id}")
+                    logger.info(
+                        f"Deleted {deleted_count} parent documents in the knowledge_base: {knowledge_base_id}")
                 else:
-                    logger.warning(f"No parent documents foundin knowledge_base: {knowledge_base_id}")
-                
+                    logger.warning(
+                        f"No parent documents foundin knowledge_base: {knowledge_base_id}")
+
                 return deleted_count
 
         except Exception as e:
-            logger.error(f"Error deleting file with hash {file_hash} from knowledge_base {knowledge_base_id}: {e}")
+            logger.error(
+                f"Error deleting file with hash {file_hash} from knowledge_base {knowledge_base_id}: {e}")
             raise
 
-    async def add_parent(self, parent_id: str, knowledge_base_id: str,
-                         text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """添加或更新父块"""
+    async def add_parents_batch(self, parents_data: List[Dict[str, Any]]) -> int:
+        """批量添加父块"""
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
-
+        
+        #transaction开启数据库事务,如果任何操作失败，所有更改都会回滚保证数据一致性（要么全部成功，要么全部失败）
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO parent_documents (parent_id, knowledge_base_id, text, metadata)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (parent_id) 
-                    DO UPDATE SET 
-                        knowledge_base_id = EXCLUDED.knowledge_base_id,
-                        text = EXCLUDED.text,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = CURRENT_TIMESTAMP
-                """, parent_id, knowledge_base_id, text, json.dumps(metadata or {}))
-
-                return True
-
+                async with conn.transaction():
+                    for data in parents_data:
+                        await conn.execute("""
+                            INSERT INTO parent_documents (parent_id, knowledge_base_id, text, metadata)
+                            VALUES ($1, $2, $3, $4)
+                            ON CONFLICT (parent_id) DO UPDATE 
+                            SET text = EXCLUDED.text, metadata = EXCLUDED.metadata, updated_at = CURRENT_TIMESTAMP
+                        """, data["parent_id"], data["knowledge_base_id"], data["text"], 
+                        json.dumps(data["metadata"] or {}))
+            return len(parents_data)
         except Exception as e:
-            logger.error(f"Error adding parent {parent_id}: {e}")
+            logger.error(f"Error batch adding parents: {e}")
             raise
 
     async def close(self):

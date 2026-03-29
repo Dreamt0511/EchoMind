@@ -189,7 +189,7 @@ class AsyncMilvusClientWrapper:
         logger.info(f"已添加 {len(data)} 个子块到 Milvus（知识库: {knowledge_base_id}）")
         return result
 
-    async def hybrid_search(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
+    async def hybrid_retrieval(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
         """
         混合检索，返回去重后的父块ID列表
         Args:
@@ -215,7 +215,7 @@ class AsyncMilvusClientWrapper:
             data=[dense_vector],
             anns_field="dense_vector",
             param={"metric_type": "COSINE", "params": {"ef": 64}},
-            limit=top_k * 10,
+            limit=top_k * 10,#语义检索100个
             expr=filter_expr
         )
         
@@ -223,7 +223,7 @@ class AsyncMilvusClientWrapper:
             data=[query],
             anns_field="sparse_bm25",
             param={"metric_type": "BM25"},
-            limit=top_k * 2,
+            limit=top_k * 3,#BM25检索30个
             expr=filter_expr
         )
         
@@ -232,7 +232,7 @@ class AsyncMilvusClientWrapper:
             collection_name=self.collection_name,
             reqs=[dense_req, sparse_req],
             ranker=RRFRanker(),
-            limit=top_k,
+            limit=top_k * 3,#取前30个融合的结果
             output_fields=["parent_id"]
         )
         
@@ -338,3 +338,4 @@ class AsyncMilvusClientWrapper:
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+

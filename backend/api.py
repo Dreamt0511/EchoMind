@@ -1,7 +1,7 @@
-from documents_process import TempDocumentProcessor, DocumentProcessor, HashStorage
+from documents_process import TempDocumentProcessor, DocumentProcessor, HashStorage, rerank_documents
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
-from typing import List, Dict
-from schemas import DocumentUploadResponse,DocumentDeleteResponse
+from typing import List, Dict, Optional
+from schemas import DocumentUploadResponse,DocumentDeleteResponse,DocumentRetrievalResponse
 from postgresql_client import PostgreSQLParentClient
 from milvus_client import AsyncMilvusClientWrapper
 import logging
@@ -199,6 +199,29 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
         message=f"成功删除 {deleted_parent_count} 个父块和 {deleted_child_count} 个子块",
         knowledge_base_id=knowledge_base_id,
     )
+
+@router.get("/documents/retrieval", response_model=DocumentRetrievalResponse)
+async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
+    """检索文档"""
+    async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
+        parent_chunkId_list = await milvus_client.hybrid_retrieval(
+            query, knowledge_base_id, top_k)
+        
+        # 从 PostgreSQL获取父块
+        async with PostgreSQLParentClient() as postgresql_client:
+            parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
+            text_list = [doc.text for doc in parent_documents]
+            rerank_result = await rerank_documents(query, text_list, top_k)
+            related_documents = []
+            if not rerank_result:
+                #重排序失败的情况下降级取RRF融合后的前10个片段
+                related_documents = parent_documents[:top_k]
+            else:
+                for item in rerank_result['output']['results']:
+                   related_documents.append(item['document']['text'])
+                related_documents = related_documents[:top_k]
+    
+    return DocumentRetrievalResponse(parent_documents=related_documents)
 
 
 

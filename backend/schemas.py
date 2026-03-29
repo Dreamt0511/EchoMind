@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict
 
 class DocumentUploadResponse(BaseModel):
     "文件上传响应模型"
@@ -14,3 +14,6 @@ class DocumentUploadResponse(BaseModel):
 class DocumentDeleteResponse(BaseModel):
     message: str
     knowledge_base_id : str
+
+class DocumentRetrievalResponse(BaseModel):
+    parent_documents: List[str]
