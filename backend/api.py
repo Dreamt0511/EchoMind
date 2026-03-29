@@ -1,4 +1,5 @@
-from documents_process import TempDocumentProcessor, DocumentProcessor, HashStorage, rerank_documents
+from documents_process import TempDocumentProcessor, DocumentProcessor, rerank_documents
+from hash_storage import HashStorage
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
 from typing import List, Dict, Optional
 from schemas import DocumentUploadResponse,DocumentDeleteResponse,DocumentRetrievalResponse

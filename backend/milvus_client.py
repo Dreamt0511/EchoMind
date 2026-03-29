@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 from langchain_community.embeddings import DashScopeEmbeddings
 from pymilvus import AsyncMilvusClient, DataType, Function, FunctionType
 from pymilvus import AnnSearchRequest, RRFRanker
-
+from hash_storage import HashStorage
 import logging
 logger = logging.getLogger(__name__)
 
@@ -15,8 +15,11 @@ load_dotenv()
 
 
 class AsyncMilvusClientWrapper:
-    def __init__(self, hash_storage):
-        """初始化异步 Milvus 客户端"""
+    def __init__(self, hash_storage: Optional["HashStorage"] = None):
+        """
+        初始化异步 Milvus 客户端
+        :param hash_storage: HashStorage 实例，可选参数，不传则不使用哈希存储
+        """
         self.collection_name = os.getenv("collection_name")
         self.embeddings = DashScopeEmbeddings(
             model=os.getenv("EMBEDDING_MODEL"),
@@ -30,7 +33,9 @@ class AsyncMilvusClientWrapper:
         )
         
         self.dense_dim = int(os.getenv("dense_dimension", "1024"))
-        self.hash_storage = hash_storage
+        
+        #hash_storage 可选参数
+        self.hash_storage = hash_storage  # 可以是 None 或 HashStorage 实例
         self._initialized = False
 
     async def _ensure_initialized(self):
