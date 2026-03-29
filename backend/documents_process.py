@@ -74,6 +74,19 @@ class HashStorage:
             self._save_hashes(self.files_hash_path, self.files_hash)
             logger.info(f"删除文件哈希: {file_hash[:16]}...")
 
+    def remove_chunk_hashes_batch(self, chunk_hashes: List[str]):
+        """批量删除块哈希"""
+        removed_count = 0
+        for chunk_hash in chunk_hashes:
+            if chunk_hash in self.chunks_hash:
+                self.chunks_hash.discard(chunk_hash)
+                removed_count += 1
+        
+        if removed_count > 0:
+            self._save_hashes(self.chunks_hash_path, self.chunks_hash)
+            logger.info(f"批量删除 {removed_count} 个块哈希")
+
+
     # 分块哈希管理
     def is_chunk_duplicate(self, chunk_hash: str) -> bool:
         """检查分块哈希是否已存在"""
@@ -209,7 +222,8 @@ class DocumentProcessor:
                     "parent_index": parent_index,
                     "chunk_index": child_index,
                     "file_name": filename,
-                    "file_hash": file_hash,
+                    "child_chunk_hash":child_chunk_hash,#子块哈希用于删除hashStorge中的记录
+                    "file_hash": file_hash,#文件哈希，用于定位文件删除关联子块
                     "knowledge_base_id": knowledge_base_id
                 })
 

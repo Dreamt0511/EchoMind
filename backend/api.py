@@ -1,13 +1,16 @@
 from documents_process import TempDocumentProcessor, DocumentProcessor, HashStorage
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
 from typing import List, Dict
-from schemas import DocumentUploadResponse
+from schemas import DocumentUploadResponse,DocumentDeleteResponse
+from postgresql_client import PostgreSQLParentClient
+from milvus_client import AsyncMilvusClientWrapper
 import logging
 import sys
 import asyncio
 import hashlib
 import uuid
 import aiofiles
+import os
 
 # 配置日志
 logging.basicConfig(
@@ -169,3 +172,37 @@ async def file_upload(
                 except:
                     pass
             raise HTTPException(status_code=500, detail=f"文件处理失败: {str(e)}")
+
+
+@router.delete("/documents", response_model=DocumentDeleteResponse)
+async def delete_document(file_hash: str, knowledge_base_id: str):
+    deleted_parent_count = 0
+    deleted_child_count = 0
+    
+    try:
+        # 删除 PostgreSQL中的父块
+        async with PostgreSQLParentClient() as postgresql_client:
+            deleted_parent_count = await postgresql_client.delete_all_file(
+                knowledge_base_id, file_hash
+            )
+        
+        # 删除 Milvus中的子块
+        async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
+            deleted_child_count = await milvus_client.delete_file_by_hash(
+                knowledge_base_id, file_hash
+            )
+    except Exception as e:
+        logger.error(f"删除失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+    
+    return DocumentDeleteResponse(
+        message=f"成功删除 {deleted_parent_count} 个父块和 {deleted_child_count} 个子块",
+        knowledge_base_id=knowledge_base_id,
+    )
+
+
+
+
+
+
+   

@@ -125,31 +125,6 @@ class PostgreSQLParentClient:
             logger.error(f"Failed to initialize PostgreSQL client: {e}")
             raise
 
-    async def add_parent(self, parent_id: str, knowledge_base_id: str,
-                         text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """添加或更新父块"""
-        if not self.pool:
-            raise RuntimeError("Connection pool not initialized")
-
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO parent_documents (parent_id, knowledge_base_id, text, metadata)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (parent_id) 
-                    DO UPDATE SET 
-                        knowledge_base_id = EXCLUDED.knowledge_base_id,
-                        text = EXCLUDED.text,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = CURRENT_TIMESTAMP
-                """, parent_id, knowledge_base_id, text, json.dumps(metadata or {}))
-
-                return True
-
-        except Exception as e:
-            logger.error(f"Error adding parent {parent_id}: {e}")
-            raise
-
     async def get_parent(self, parent_id: str) -> Optional[ParentDocument]:
         """获取单个父块"""
         results = await self.get_parents([parent_id])
@@ -186,40 +161,6 @@ class PostgreSQLParentClient:
             logger.error(f"Error getting parents: {e}")
             raise
 
-    async def get_parents_by_knowledge_base(
-        self,
-        knowledge_base_id: str,
-        limit: int = 100,
-        offset: int = 0
-    ) -> List[ParentDocument]:
-        """获取知识库下的所有父块"""
-        if not self.pool:
-            raise RuntimeError("Connection pool not initialized")
-
-        try:
-            async with self.pool.acquire() as conn:
-                results = await conn.fetch("""
-                    SELECT parent_id, knowledge_base_id, text, metadata, created_at, updated_at
-                    FROM parent_documents
-                    WHERE knowledge_base_id = $1
-                    ORDER BY created_at DESC
-                    LIMIT $2 OFFSET $3
-                """, knowledge_base_id, limit, offset)
-
-                return [
-                    ParentDocument(
-                        parent_id=r['parent_id'],
-                        knowledge_base_id=r['knowledge_base_id'],
-                        text=r['text'],
-                        metadata=r['metadata'] or {},
-                        created_at=r['created_at'],
-                        updated_at=r['updated_at']
-                    ) for r in results
-                ]
-
-        except Exception as e:
-            logger.error(f"Error getting parents by knowledge base: {e}")
-            raise
 
     async def delete_parent(self, parent_id: str) -> bool:
         """删除父块"""
@@ -255,11 +196,73 @@ class PostgreSQLParentClient:
             logger.error(f"Error deleting knowledge base {knowledge_base_id}: {e}")
             raise
 
+    async def delete_all_file(self,knowledge_base_id: str,file_hash: str) -> int:
+        """
+        删除指定知识库中指定文件的所有父块（通过 metadata 中的 file_hash）
+        Args:
+            file_hash: 文件的哈希值
+            knowledge_base_id: 知识库ID
+        Returns:
+            删除的记录数量
+        """
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+
+        try:
+            async with self.pool.acquire() as conn:
+                # 同时使用 knowledge_base_id 和 file_hash 条件删除
+                result = await conn.execute("""
+                    DELETE FROM parent_documents 
+                    WHERE knowledge_base_id = $1 
+                    AND metadata->>'file_hash' = $2
+                """, knowledge_base_id, file_hash)
+                
+                # 解析删除的行数
+                deleted_count = int(result.split()[-1]) if result.startswith("DELETE ") else 0
+                
+                if deleted_count > 0:
+                    logger.info(f"Deleted {deleted_count} parent documents in the knowledge_base: {knowledge_base_id}")
+                else:
+                    logger.warning(f"No parent documents foundin knowledge_base: {knowledge_base_id}")
+                
+                return deleted_count
+
+        except Exception as e:
+            logger.error(f"Error deleting file with hash {file_hash} from knowledge_base {knowledge_base_id}: {e}")
+            raise
+
+    async def add_parent(self, parent_id: str, knowledge_base_id: str,
+                         text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """添加或更新父块"""
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO parent_documents (parent_id, knowledge_base_id, text, metadata)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (parent_id) 
+                    DO UPDATE SET 
+                        knowledge_base_id = EXCLUDED.knowledge_base_id,
+                        text = EXCLUDED.text,
+                        metadata = EXCLUDED.metadata,
+                        updated_at = CURRENT_TIMESTAMP
+                """, parent_id, knowledge_base_id, text, json.dumps(metadata or {}))
+
+                return True
+
+        except Exception as e:
+            logger.error(f"Error adding parent {parent_id}: {e}")
+            raise
+
     async def close(self):
         """关闭连接池"""
         if self.pool:
             await self.pool.close()
             logger.info("PostgreSQL connection pool closed")
+
+    
 
 import asyncio
 async def main():

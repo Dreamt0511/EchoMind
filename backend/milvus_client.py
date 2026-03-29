@@ -291,28 +291,41 @@ class AsyncMilvusClientWrapper:
         # 构造过滤条件
         filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and metadata["file_hash"] == "{file_hash}"'
         
-        # 异步查询要删除的数据
+        # 异步查询要删除的数据（需要获取 child_chunk_hash）
         results = await self.client.query(
             collection_name=self.collection_name,
             filter=filter_expr,
-            output_fields=["chunk_id"]
+            output_fields=["chunk_id", "metadata"]  # 添加 metadata 字段
         )
         
         if results:
+            # 收集所有子块哈希
+            chunk_hashes = []
+            for result in results:
+                metadata = result.get("metadata", {})
+                chunk_hash = metadata.get("child_chunk_hash")
+                if chunk_hash:
+                    chunk_hashes.append(chunk_hash)
+            
             # 异步删除数据
             await self.client.delete(
                 collection_name=self.collection_name,
                 filter=filter_expr
             )
             
+            # 批量删除块哈希
+            if chunk_hashes:
+                self.hash_storage.remove_chunk_hashes_batch(chunk_hashes)
+                logger.info(f"已删除 {len(chunk_hashes)} 个块哈希记录")
+            
             # 从哈希存储中移除文件哈希
             self.hash_storage.remove_file_hash(file_hash)
             
             logger.info(f"已删除文件哈希 {file_hash} 的 {len(results)} 个子块")
-            return {"success": True, "deleted_chunks": len(results)}
+            return len(results)
         else:
             logger.warning(f"未找到文件哈希 {file_hash} 的数据")
-            return {"success": False, "message": "文件不存在"}
+            return 0
 
     async def close(self):
         """关闭客户端连接"""
