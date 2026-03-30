@@ -221,9 +221,11 @@ async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None
         # 从 PostgreSQL获取父块
         async with PostgreSQLParentClient() as postgresql_client:
             parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
+            # 提取父块文本列表
             text_list = [doc.text for doc in parent_documents]
-            # ✅ rerank_documents 已经是异步的
+            # 重排序父块
             rerank_result = await rerank_documents(query, text_list, top_k)
+
             related_documents = []
             if not rerank_result:
                 # 重排序失败的情况下降级取RRF融合后的前10个片段
@@ -231,8 +233,17 @@ async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None
             else:
                 for item in rerank_result['output']['results']:
                     related_documents.append(item['document']['text'])
+
+
                 related_documents = related_documents[:top_k]
 
     return DocumentRetrievalResponse(parent_documents=related_documents)
+
+"""
+rerank_result的结构示例：
+{'output': {'results': [{'document': {'text': '20 世纪80 年代末'}, 'index': 0, 
+'relevance_score': 0.886919463597282}]}, 'usage': {'total_tokens': 1224}, 
+'request_id': '2252323b-a3ba-4ef5-a203-e305b64249e1'}  
+"""
 
 
