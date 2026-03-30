@@ -1,5 +1,4 @@
 import os
-import asyncio
 from dotenv import load_dotenv
 from typing import List, Optional, Tuple
 from langchain_core.documents import Document
@@ -149,26 +148,48 @@ class AsyncMilvusClientWrapper:
 
     async def add_chunks_batch(self, knowledge_base_id: str, chunks_with_ids: List[Tuple[str, Document]]):
         """
-        批量添加已切好的子块到 Milvus
-        Args:
-            knowledge_base_id: 知识库ID
-            chunks_with_ids: [(chunk_id, Document), ...] 列表
+        批量添加已切好的子块到 Milvus（使用异步批量向量化，支持分批）
         """
         await self._ensure_initialized()
         
         if not chunks_with_ids:
             return
         
-        # 准备插入数据
-        data = []
+        # 准备数据
+        texts = []
+        chunks_info = []
+        
         for chunk_id, chunk in chunks_with_ids:
             if "parent_id" not in chunk.metadata:
-                raise ValueError(f"子块缺少 parent_id 元数据: {chunk.page_content[:50]}...")
+                raise ValueError(f"子块缺少 parent_id 元数据")
             
             chunk_index = chunk.metadata.get("chunk_index", 0)
-            
-            # 生成稠密向量（同步操作，但可以放在线程池中）
-            dense_vector = self.embeddings.embed_query(chunk.page_content)
+            texts.append(chunk.page_content)
+            chunks_info.append({
+                "chunk_id": chunk_id,
+                "parent_id": chunk.metadata["parent_id"],
+                "knowledge_base_id": knowledge_base_id,
+                "chunk_index": chunk_index,
+                "chunk": chunk
+            })
+        ## 使用异步批量接口向量化文本
+        dense_vectors = await self.embeddings.aembed_documents(texts)
+        """ 
+        # 分批处理（如果 API 有批次大小限制）
+        batch_size = 20  # 根据实际情况调整
+        dense_vectors = []
+        
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            # 使用异步批量接口
+            batch_vectors = await self.embeddings.aembed_documents(batch_texts)
+            dense_vectors.extend(batch_vectors)
+
+        """
+        # 准备插入数据
+        data = []
+        for i, chunk_info in enumerate(chunks_info):
+            chunk = chunk_info["chunk"]
             
             stored_metadata = {
                 k: v for k, v in chunk.metadata.items()
@@ -176,13 +197,13 @@ class AsyncMilvusClientWrapper:
             }
             
             data.append({
-                "chunk_id": chunk_id,
-                "parent_id": chunk.metadata["parent_id"],
-                "knowledge_base_id": knowledge_base_id,
-                "chunk_index": chunk_index,
+                "chunk_id": chunk_info["chunk_id"],
+                "parent_id": chunk_info["parent_id"],
+                "knowledge_base_id": chunk_info["knowledge_base_id"],
+                "chunk_index": chunk_info["chunk_index"],
                 "text": chunk.page_content,
                 "metadata": stored_metadata,
-                "dense_vector": dense_vector
+                "dense_vector": dense_vectors[i]
             })
         
         # 异步批量插入
@@ -320,11 +341,11 @@ class AsyncMilvusClientWrapper:
             
             # 批量删除块哈希
             if chunk_hashes:
-                self.hash_storage.remove_chunk_hashes_batch(chunk_hashes)
+                await self.hash_storage.remove_chunk_hashes_batch(chunk_hashes)
                 logger.info(f"已删除 {len(chunk_hashes)} 个块哈希记录")
             
             # 从哈希存储中移除文件哈希
-            self.hash_storage.remove_file_hash(file_hash)
+            await self.hash_storage.remove_file_hash(file_hash)
             
             logger.info(f"已删除文件哈希 {file_hash} 的 {len(results)} 个子块")
             return len(results)

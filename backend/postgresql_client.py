@@ -158,23 +158,6 @@ class PostgreSQLParentClient:
             logger.error(f"Error getting parents: {e}")
             raise
 
-    async def delete_parent(self, parent_id: str) -> bool:
-        """删除父块"""
-        if not self.pool:
-            raise RuntimeError("Connection pool not initialized")
-
-        try:
-            async with self.pool.acquire() as conn:
-                result = await conn.execute("""
-                    DELETE FROM parent_documents WHERE parent_id = $1
-                """, parent_id)
-
-                return result == "DELETE 1"
-
-        except Exception as e:
-            logger.error(f"Error deleting parent {parent_id}: {e}")
-            raise
-
     async def delete_knowledge_base(self, knowledge_base_id: str) -> int:
         """删除整个知识库的父块"""
         if not self.pool:
@@ -285,7 +268,6 @@ async def main():
                 ORDER BY created_at DESC
             """)
             
-            print(f"数据库内容（共 {len(records)} 条记录）:")
             print("=" * 80)
             
             for idx, record in enumerate(records, 1):
@@ -296,6 +278,6 @@ async def main():
                 print(f"  metadata: {record['metadata']}")
                 print(f"  created_at: {record['created_at']}")
                 print("=" * 80)
-
+            print(f"数据库内容（共 {len(records)} 条记录）:")
 if __name__ == "__main__":
     asyncio.run(main())

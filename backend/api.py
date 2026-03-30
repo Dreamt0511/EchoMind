@@ -2,7 +2,7 @@ from documents_process import TempDocumentProcessor, DocumentProcessor, rerank_d
 from hash_storage import HashStorage
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
 from typing import List, Dict, Optional
-from schemas import DocumentUploadResponse,DocumentDeleteResponse,DocumentRetrievalResponse
+from schemas import DocumentUploadResponse, DocumentDeleteResponse, DocumentRetrievalResponse
 from postgresql_client import PostgreSQLParentClient
 from milvus_client import AsyncMilvusClientWrapper
 import logging
@@ -25,11 +25,15 @@ router = APIRouter()
 
 # 配置常量
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200mb
-CHUNK_SIZE = 256 * 1024  # 256kb
+CHUNK_SIZE = 1024 * 1024  # 1mb
 MAX_CONCURRENT_UPLOADS = 10
 
+
 # 全局实例
-hash_storage = HashStorage()  # 修复：改为正确的变量名
+hash_storage = HashStorage()  # 异步版本
+
+
+
 upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 
 
@@ -68,9 +72,8 @@ async def file_upload(
             sha256 = hashlib.sha256()
             temp_processor = TempDocumentProcessor()
 
-            # 修复：正确调用 uuid.uuid4()
-            temp_file_path = temp_processor.temp_dir / \
-                f"{uuid.uuid4()}_{filename}"
+            
+            temp_file_path = temp_processor.temp_dir / f"{uuid.uuid4()}_{filename}"
 
             # 流式计算哈希，写入文件
             try:
@@ -103,7 +106,8 @@ async def file_upload(
                 # 异常时清理临时文件
                 if temp_file_path and temp_file_path.exists():
                     try:
-                        temp_file_path.unlink()
+                        # ✅ 改为异步删除
+                        await temp_processor.delete_temp_file(temp_file_path)
                     except:
                         pass
                 raise
@@ -112,17 +116,19 @@ async def file_upload(
             if await request.is_disconnected():
                 if temp_file_path and temp_file_path.exists():
                     try:
-                        temp_file_path.unlink()
+                        #异步删除
+                        await temp_processor.delete_temp_file(temp_file_path)
                     except:
                         pass
                 raise HTTPException(status_code=400, detail="客户端已断开连接")
 
-            # 检查文件是否重复
-            if hash_storage.is_file_duplicate(file_hash):
+            #异步调用检查文件是否重复
+            if await hash_storage.is_file_duplicate(file_hash):
                 logger.info(f"文件已存在，跳过处理: {filename}")
                 if temp_file_path and temp_file_path.exists():
                     try:
-                        temp_file_path.unlink()
+                        # 异步删除
+                        await temp_processor.delete_temp_file(temp_file_path)
                     except:
                         pass
 
@@ -138,9 +144,11 @@ async def file_upload(
             if background_tasks is None:
                 background_tasks = BackgroundTasks()
 
+            # DocumentProcessor 需要改为异步版本
             document_instance = DocumentProcessor(hash_storage)
 
             # 将文档处理任务添加到后台（处理完成后会自动清理临时文件）
+            #process_document 需要是异步函数
             background_tasks.add_task(
                 document_instance.process_document,
                 temp_file_path=temp_file_path,
@@ -169,7 +177,7 @@ async def file_upload(
             # 清理临时文件
             if temp_file_path and temp_file_path.exists():
                 try:
-                    temp_file_path.unlink()
+                    await temp_processor.delete_temp_file(temp_file_path)
                 except:
                     pass
             raise HTTPException(status_code=500, detail=f"文件处理失败: {str(e)}")
@@ -179,27 +187,29 @@ async def file_upload(
 async def delete_document(file_hash: str, knowledge_base_id: str):
     deleted_parent_count = 0
     deleted_child_count = 0
-    
+
     try:
         # 删除 PostgreSQL中的父块
         async with PostgreSQLParentClient() as postgresql_client:
             deleted_parent_count = await postgresql_client.delete_all_file(
                 knowledge_base_id, file_hash
             )
-        
+
         # 删除 Milvus中的子块
         async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
             deleted_child_count = await milvus_client.delete_file_by_hash(
                 knowledge_base_id, file_hash
             )
+        
     except Exception as e:
         logger.error(f"删除失败: {e}")
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
-    
+
     return DocumentDeleteResponse(
         message=f"成功删除 {deleted_parent_count} 个父块和 {deleted_child_count} 个子块",
         knowledge_base_id=knowledge_base_id,
     )
+
 
 @router.get("/documents/retrieval", response_model=DocumentRetrievalResponse)
 async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
@@ -207,26 +217,22 @@ async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None
     async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
         parent_chunkId_list = await milvus_client.hybrid_retrieval(
             query, knowledge_base_id, top_k)
-        
+
         # 从 PostgreSQL获取父块
         async with PostgreSQLParentClient() as postgresql_client:
             parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
             text_list = [doc.text for doc in parent_documents]
+            # ✅ rerank_documents 已经是异步的
             rerank_result = await rerank_documents(query, text_list, top_k)
             related_documents = []
             if not rerank_result:
-                #重排序失败的情况下降级取RRF融合后的前10个片段
+                # 重排序失败的情况下降级取RRF融合后的前10个片段
                 related_documents = parent_documents[:top_k]
             else:
                 for item in rerank_result['output']['results']:
-                   related_documents.append(item['document']['text'])
+                    related_documents.append(item['document']['text'])
                 related_documents = related_documents[:top_k]
-    
+
     return DocumentRetrievalResponse(parent_documents=related_documents)
 
 
-
-
-
-
-   
