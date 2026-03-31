@@ -14,22 +14,4 @@ async def search_knowledge_base(query: str,knowledge_base_id: str, top_k: int = 
     Do NOT use for general common sense, casual chat, or easily inferred answers.
     Returns reranked, highly relevant document snippets.
     """
-    async with AsyncMilvusClientWrapper() as milvus_client:
-        parent_chunkId_list = await milvus_client.hybrid_retrieval(
-            query, knowledge_base_id, top_k)
-        
-        # 从 PostgreSQL获取父块
-        async with PostgreSQLParentClient() as postgresql_client:
-            parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
-            text_list = [doc.text for doc in parent_documents]
-            rerank_result = await rerank_documents(query, text_list, top_k)
-            related_documents = []
-            if not rerank_result:
-                #重排序失败的情况下降级取RRF融合后的前10个片段
-                related_documents = parent_documents[:top_k]
-            else:
-                for item in rerank_result['output']['results']:
-                    related_documents.append(item['document']['text'])
-                related_documents = related_documents[:top_k]
-        
-        return related_documents
+   

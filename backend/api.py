@@ -214,16 +214,19 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
 @router.get("/documents/retrieval", response_model=DocumentRetrievalResponse)
 async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
     """检索文档"""
+    logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
     async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
         parent_chunkId_list = await milvus_client.hybrid_retrieval(
             query, knowledge_base_id, top_k)
 
+        logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
         # 从 PostgreSQL获取父块
         async with PostgreSQLParentClient() as postgresql_client:
             parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
             # 提取父块文本列表
             text_list = [doc.text for doc in parent_documents]
             # 重排序父块
+            logger.info(f"{'---'*20}开始重排序父块rerank_documents{'---'*20}")
             rerank_result = await rerank_documents(query, text_list, top_k)
 
             related_documents = []
@@ -233,9 +236,9 @@ async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None
             else:
                 for item in rerank_result['output']['results']:
                     related_documents.append(item['document']['text'])
-
-
                 related_documents = related_documents[:top_k]
+
+    logger.info(f"{'---'*20}检索完成{'---'*20}")
 
     return DocumentRetrievalResponse(parent_documents=related_documents)
 

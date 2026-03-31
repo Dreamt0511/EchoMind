@@ -260,7 +260,7 @@ class AsyncMilvusClientWrapper:
         {'cost': 6}
         """
 
-        # 返回去重后的父块ID列表
+        # 返回去重后的父块ID列表(子块去重的步骤在这，需要检索的父块数量在0-3*top_k之间)
         return list(set([hit["entity"]["parent_id"] for hit in results[0]]))
 
     async def search_dense_only(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 30):
