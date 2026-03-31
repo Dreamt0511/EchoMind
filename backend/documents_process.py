@@ -7,7 +7,7 @@ import httpx
 import asyncio
 from langchain_community.document_loaders import Docx2txtLoader, PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from milvus_client import AsyncMilvusClientWrapper
+from milvus_client import get_milvus_client
 import config
 from typing import List, Dict, Set
 import os
@@ -15,11 +15,8 @@ from pathlib import Path
 import uuid
 import hashlib
 import logging
-from postgresql_client import PostgreSQLParentClient
+from postgresql_client import get_postgresql_client
 logger = logging.getLogger(__name__)
-
-
-# 从独立文件导入 HashStorage（唯一新增代码）
 
 
 class TempDocumentProcessor:
@@ -57,7 +54,14 @@ class DocumentProcessor:
         )
         self.temp_dir = os.getenv("TEMP_DIR", "/tmp")
         self.hash_storage = hash_storage
-        self.milvus_client = AsyncMilvusClientWrapper(hash_storage)
+        # 修改：不再直接创建实例，延迟初始化
+        self._milvus_client = None
+
+    async def _get_milvus_client(self):
+        """延迟获取 Milvus 客户端"""
+        if self._milvus_client is None:
+            self._milvus_client = await get_milvus_client(self.hash_storage)
+        return self._milvus_client
 
     async def process_document(self,
                            temp_file_path: Path,
@@ -167,18 +171,19 @@ class DocumentProcessor:
             await self.hash_storage.batch_add_chunk_hashes(new_hashes)
             logger.info(f"==========批量添加新哈希完成==========")
         
-        # 批量插入milvus数据库
+        # 批量插入milvus数据库 - 使用全局客户端
         if new_child_items:
-            await self.milvus_client.add_chunks_batch(
+            milvus_client = await self._get_milvus_client()
+            await milvus_client.add_chunks_batch(
                 knowledge_base_id=knowledge_base_id,
                 chunks_with_ids=new_child_items
             )
             logger.info(f"==========批量插入新子块到milvus完成==========")
         
-        # 批量插入postgresql数据库
-        async with PostgreSQLParentClient() as postgresql_client:
-            await postgresql_client.add_parents_batch(parent_data_list)
-            logger.info(f"==========批量插入父块到postgresql完成==========")
+        # 批量插入postgresql数据库 - 使用全局客户端
+        postgresql_client = await get_postgresql_client()
+        await postgresql_client.add_parents_batch(parent_data_list)
+        logger.info(f"==========批量插入父块到postgresql完成==========")
 
         
         logger.info(f"==========所有步骤完成处理==========")
@@ -200,6 +205,12 @@ async def rerank_documents(query: str, documents: list, top_n=5):
     """
     一个通用的重排序API调用模板
     """
+    # 优化：限制输入文档数量
+    max_input = min(top_n * 3, 30)  # 最多20个文档
+    if len(documents) > max_input:
+        logger.info(f"重排序输入文档数从 {len(documents)} 截取到 {max_input}")
+        documents = documents[:max_input]
+    
     rerank_model = os.getenv('RERANK_MODEL', 'qwen3-rerank')
     api_key = os.getenv('DASHSCOPE_API_KEY')
     if not api_key:
@@ -216,26 +227,30 @@ async def rerank_documents(query: str, documents: list, top_n=5):
     }
 
     # 请求体
-    payload = payload = {
+    payload = {
         "model": rerank_model,
-        "input": {  # 必须包在 input 里面！
+        "input": {
             "query": query,
             "documents": documents
         },
-        "parameters": {  # 必须包在 parameters 里面！
+        "parameters": {
             "top_n": top_n,
             "return_documents": True
         }
     }
-    # 发送请求
+    
+    # 发送请求 - 添加超时控制
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=3.0) as client:  # 3秒超时
             response = await client.post(url, headers=headers, json=payload)
         if response.status_code == HTTPStatus.OK:
             return response.json()
         else:
-            logger.error(f"API 请求失败: {response.status_code} - {response.text}")
-            return False
+            logger.error(f"API 请求失败: {response.status_code}")
+            return None  # 返回 None 而不是 False
+    except httpx.TimeoutException:
+        logger.warning("重排序 API 超时，使用原始结果")
+        return None
     except Exception as e:
-        logger.error(f"请求发生异常: {e}")
-        raise False
+        logger.error(f"重排序请求发生异常: {e}")
+        return None  # 返回 None 触发降级

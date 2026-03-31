@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+import asyncio
 
 load_dotenv()
 
@@ -49,7 +50,17 @@ class ParentDocument:
 
 
 class PostgreSQLParentClient:
-    """PostgreSQL 客户端，用于存储父块"""
+    """PostgreSQL 客户端，用于存储父块（单例模式）"""
+    
+    _instance = None
+    _singleton_initialized = False
+
+    def __new__(cls, dsn: Optional[str] = None, min_size: int = 5, max_size: int = 20,
+                 auto_create_db: bool = True):
+        """单例模式"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self, dsn: Optional[str] = None, min_size: int = 5, max_size: int = 20,
                  auto_create_db: bool = True):
@@ -62,6 +73,10 @@ class PostgreSQLParentClient:
             max_size: 连接池最大连接数
             auto_create_db: 是否自动创建数据库
         """
+        # 检查单例是否已初始化
+        if self._singleton_initialized:
+            return
+            
         self.dsn = dsn or os.getenv("DATABASE_URL")
         if not self.dsn:
             raise ValueError(
@@ -71,60 +86,65 @@ class PostgreSQLParentClient:
         self.max_size = max_size
         self.auto_create_db = auto_create_db
         self.pool: Optional[asyncpg.Pool] = None
-
-    async def __aenter__(self):
-        await self.init_pool()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        self._pool_initialized = False
+        self._pool_lock = asyncio.Lock()
+        
+        self._singleton_initialized = True
 
     async def init_pool(self) -> None:
-        """初始化连接池并创建表"""
-        try:
-            if self.auto_create_db:
-                await ensure_database_exists(self.dsn)
+        """初始化连接池并创建表（只执行一次）"""
+        if self._pool_initialized:
+            return
+            
+        async with self._pool_lock:
+            if self._pool_initialized:
+                return
+                
+            try:
+                if self.auto_create_db:
+                    await ensure_database_exists(self.dsn)
 
-            self.pool = await asyncpg.create_pool(
-                self.dsn,
-                min_size=self.min_size,
-                max_size=self.max_size,
-                command_timeout=60
-            )
+                self.pool = await asyncpg.create_pool(
+                    self.dsn,
+                    min_size=self.min_size,
+                    max_size=self.max_size,
+                    command_timeout=60
+                )
 
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS parent_documents (
-                        parent_id VARCHAR(128) PRIMARY KEY,
-                        knowledge_base_id VARCHAR(128) NOT NULL,
-                        text TEXT NOT NULL,
-                        metadata JSONB DEFAULT '{}'::jsonb,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    );
+                async with self.pool.acquire() as conn:
+                    await conn.execute("""
+                        CREATE TABLE IF NOT EXISTS parent_documents (
+                            parent_id VARCHAR(128) PRIMARY KEY,
+                            knowledge_base_id VARCHAR(128) NOT NULL,
+                            text TEXT NOT NULL,
+                            metadata JSONB DEFAULT '{}'::jsonb,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
 
-                    -- 单列索引：加速按知识库查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_kb
-                    ON parent_documents(knowledge_base_id);
+                        -- 单列索引：加速按知识库查询
+                        CREATE INDEX IF NOT EXISTS idx_parent_kb
+                        ON parent_documents(knowledge_base_id);
 
-                    -- 单列索引：加速按时间查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_created
-                    ON parent_documents(created_at);
+                        -- 单列索引：加速按时间查询
+                        CREATE INDEX IF NOT EXISTS idx_parent_created
+                        ON parent_documents(created_at);
 
-                    -- 复合索引：加速按知识库+时间排序查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_kb_created
-                    ON parent_documents(knowledge_base_id, created_at DESC);
+                        -- 复合索引：加速按知识库+时间排序查询
+                        CREATE INDEX IF NOT EXISTS idx_parent_kb_created
+                        ON parent_documents(knowledge_base_id, created_at DESC);
 
-                    -- GIN索引：加速JSONB字段内部查询
-                    CREATE INDEX IF NOT EXISTS idx_parent_metadata_gin
-                    ON parent_documents USING gin(metadata);
-                """)
+                        -- GIN索引：加速JSONB字段内部查询
+                        CREATE INDEX IF NOT EXISTS idx_parent_metadata_gin
+                        ON parent_documents USING gin(metadata);
+                    """)
 
-            logger.info("PostgreSQL client initialized successfully")
+                self._pool_initialized = True
+                logger.info("PostgreSQL client initialized successfully")
 
-        except Exception as e:
-            logger.error(f"Failed to initialize PostgreSQL client: {e}")
-            raise
+            except Exception as e:
+                logger.error(f"Failed to initialize PostgreSQL client: {e}")
+                raise
 
     async def get_parents(self, parent_ids: List[str]) -> List[ParentDocument]:
         """批量获取父块"""
@@ -141,7 +161,6 @@ class PostgreSQLParentClient:
                     FROM parent_documents
                     WHERE parent_id = ANY($1::text[])
                 """, parent_ids)
-                #::text[]：把参数强制转换为文本数组
 
                 return [
                     ParentDocument(
@@ -220,7 +239,6 @@ class PostgreSQLParentClient:
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
         
-        #transaction开启数据库事务,如果任何操作失败，所有更改都会回滚保证数据一致性（要么全部成功，要么全部失败）
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
@@ -243,41 +261,48 @@ class PostgreSQLParentClient:
             await self.pool.close()
             logger.info("PostgreSQL connection pool closed")
 
-    
+
+_global_postgresql_client = None
+
+async def get_postgresql_client():
+    """获取全局 PostgreSQL 客户端实例"""
+    global _global_postgresql_client
+    if _global_postgresql_client is None:
+        _global_postgresql_client = PostgreSQLParentClient()
+        await _global_postgresql_client.init_pool()
+    return _global_postgresql_client
+
 
 import asyncio
 async def main():
     """查看数据库所有内容（完整文本）"""
-    async with PostgreSQLParentClient(
-        dsn=os.getenv("DATABASE_URL"),
-        auto_create_db=True
-    ) as client:
+    client = await get_postgresql_client()
+    
+    async with client.pool.acquire() as conn:
+        records = await conn.fetch("""
+            SELECT 
+                parent_id,
+                knowledge_base_id,
+                text,
+                metadata,
+                created_at
+            FROM parent_documents
+            ORDER BY created_at DESC
+        """)
         
-        # #删除记录
-        # await client.delete_parent("6a43c051-717b-4bbe-9797-5f13b18aabc7")
-
-        async with client.pool.acquire() as conn:
-            records = await conn.fetch("""
-                SELECT 
-                    parent_id,
-                    knowledge_base_id,
-                    text,
-                    metadata,
-                    created_at
-                FROM parent_documents
-                ORDER BY created_at DESC
-            """)
-            
+        print("=" * 80)
+        
+        for idx, record in enumerate(records, 1):
+            print(f"\n记录 {idx}:")
+            print(f"  parent_id: {record['parent_id']}")
+            print(f"  knowledge_base_id: {record['knowledge_base_id']}")
+            print(f"  text: {record['text']}")
+            print(f"  metadata: {record['metadata']}")
+            print(f"  created_at: {record['created_at']}")
             print("=" * 80)
-            
-            for idx, record in enumerate(records, 1):
-                print(f"\n记录 {idx}:")
-                print(f"  parent_id: {record['parent_id']}")
-                print(f"  knowledge_base_id: {record['knowledge_base_id']}")
-                print(f"  text: {record['text']}")
-                print(f"  metadata: {record['metadata']}")
-                print(f"  created_at: {record['created_at']}")
-                print("=" * 80)
-            print(f"数据库内容（共 {len(records)} 条记录）:")
+        print(f"数据库内容（共 {len(records)} 条记录）:")
+        
+    await client.close()
+
 if __name__ == "__main__":
     asyncio.run(main())

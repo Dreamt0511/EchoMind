@@ -3,9 +3,76 @@ import uvicorn
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from milvus_client import get_milvus_client
+from postgresql_client import get_postgresql_client
+from hash_storage import HashStorage
+import logging
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s-%(name)s-%(levelname)s-%(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 全局哈希存储实例
+hash_storage = HashStorage()
 
 
-app = FastAPI(title="EchoMind-个性化问答助手")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时初始化
+    logger.info("=" * 50)
+    logger.info("应用启动，开始初始化连接...")
+    logger.info("=" * 50)
+    
+    try:
+        # 初始化 Milvus 客户端
+        milvus_client = await get_milvus_client(hash_storage)
+        logger.info("✓ Milvus 客户端初始化完成")
+        
+        # 初始化 PostgreSQL 客户端
+        postgresql_client = await get_postgresql_client()
+        logger.info("✓ PostgreSQL 客户端初始化完成")
+        
+        logger.info("=" * 50)
+        logger.info("所有连接初始化完成，应用已就绪")
+        logger.info("=" * 50)
+        
+    except Exception as e:
+        logger.error(f"初始化失败: {e}")
+        raise
+    
+    yield  # 应用运行期间
+    
+    # 关闭时清理
+    logger.info("=" * 50)
+    logger.info("应用关闭，清理连接...")
+    logger.info("=" * 50)
+    
+    try:
+        # 关闭 Milvus 连接
+        from milvus_client import AsyncMilvusClientWrapper
+        if AsyncMilvusClientWrapper._instance:
+            await AsyncMilvusClientWrapper._instance.close()
+            logger.info("✓ Milvus 连接已关闭")
+        
+        # 关闭 PostgreSQL 连接
+        from postgresql_client import PostgreSQLParentClient
+        if PostgreSQLParentClient._instance:
+            await PostgreSQLParentClient._instance.close()
+            logger.info("✓ PostgreSQL 连接已关闭")
+            
+    except Exception as e:
+        logger.error(f"清理连接时出错: {e}")
+    
+    logger.info("应用已关闭")
+
+
+# 创建应用并传入 lifespan
+app = FastAPI(title="EchoMind-个性化问答助手", lifespan=lifespan)
 
 # 将项目中定义的所有 API 端点注册到应用中
 app.include_router(api.router)
@@ -33,7 +100,6 @@ async def _no_cache(request, call_next):
 
 
 if __name__ == "__main__":
-
     uvicorn.run(
         app,
         host=os.getenv("HOST", "0.0.0.0"),

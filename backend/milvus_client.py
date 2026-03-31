@@ -1,4 +1,5 @@
 import os
+import asyncio
 from dotenv import load_dotenv
 from typing import List, Optional, Tuple
 from langchain_core.documents import Document
@@ -14,44 +15,54 @@ load_dotenv()
 
 
 class AsyncMilvusClientWrapper:
+    _instance = None
+    _singleton_initialized = False
+    
+    def __new__(cls, hash_storage: Optional["HashStorage"] = None):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self, hash_storage: Optional["HashStorage"] = None):
-        """
-        初始化异步 Milvus 客户端
-        :param hash_storage: HashStorage 实例，可选参数，不传则不使用哈希存储
-        """
+        # 检查单例是否已初始化
+        if self._singleton_initialized:
+            return
+            
         self.collection_name = os.getenv("collection_name")
         self.embeddings = DashScopeEmbeddings(
             model=os.getenv("EMBEDDING_MODEL"),
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY")
         )
-
-        # 创建异步客户端
         self.client = AsyncMilvusClient(
             uri=os.getenv("Milvus_url"),
             token=os.getenv("Token")
         )
-
         self.dense_dim = int(os.getenv("dense_dimension", "1024"))
+        self.hash_storage = hash_storage
+        self._collection_initialized = False
+        self._collection_lock = asyncio.Lock()
+        
+        self._singleton_initialized = True
 
-        # hash_storage 可选参数
-        self.hash_storage = hash_storage  # 可以是 None 或 HashStorage 实例
-        self._initialized = False
-
-    async def _ensure_initialized(self):
-        """确保集合已初始化"""
-        if not self._initialized:
+    async def ensure_collection(self):
+        """确保集合已初始化（只在启动时调用一次）"""
+        if self._collection_initialized:
+            return
+        
+        async with self._collection_lock:
+            if self._collection_initialized:
+                return
             await self._init_collection()
-            self._initialized = True
+            self._collection_initialized = True
 
     async def _init_collection(self):
         """异步初始化集合，配置 BM25 内置函数"""
-
         # 检查集合是否已存在
         if await self.client.has_collection(self.collection_name):
             logger.info(f"集合 {self.collection_name} 已存在")
             return
 
-        # 创建 Schema（同步方法，直接调用）
+        # 创建 Schema
         schema = self.client.create_schema(enable_dynamic_field=True)
 
         # 添加字段
@@ -147,11 +158,8 @@ class AsyncMilvusClientWrapper:
         logger.info(f"集合 {self.collection_name} 创建成功")
 
     async def add_chunks_batch(self, knowledge_base_id: str, chunks_with_ids: List[Tuple[str, Document]]):
-        """
-        批量添加已切好的子块到 Milvus（使用异步批量向量化，支持分批）
-        """
-        await self._ensure_initialized()
-
+        """批量添加已切好的子块到 Milvus"""
+        # 移除 _ensure_initialized 调用，因为启动时已经初始化
         if not chunks_with_ids:
             return
 
@@ -172,6 +180,7 @@ class AsyncMilvusClientWrapper:
                 "chunk_index": chunk_index,
                 "chunk": chunk
             })
+        
         # 使用异步批量接口向量化文本
         dense_vectors = await self.embeddings.aembed_documents(texts)
 
@@ -205,16 +214,8 @@ class AsyncMilvusClientWrapper:
         return result
 
     async def hybrid_retrieval(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
-        """
-        混合检索，返回去重后的父块ID列表
-        Args:
-            query: 查询文本
-            knowledge_base_id: 知识库ID，为None时检索所有知识库
-            top_k: 返回结果数量
-        Returns:
-            去重后的父块ID列表
-        """
-        await self._ensure_initialized()
+        """混合检索，返回去重后的父块ID列表"""
+        # 移除 _ensure_initialized 调用，因为启动时已经初始化
 
         # 构建过滤表达式
         if knowledge_base_id:
@@ -230,7 +231,7 @@ class AsyncMilvusClientWrapper:
             data=[dense_vector],
             anns_field="dense_vector",
             param={"metric_type": "COSINE", "params": {"ef": 64}},
-            limit=top_k * 10,  # 语义检索100个
+            limit=top_k * 10,
             expr=filter_expr
         )
 
@@ -238,7 +239,7 @@ class AsyncMilvusClientWrapper:
             data=[query],
             anns_field="sparse_bm25",
             param={"metric_type": "BM25"},
-            limit=top_k * 3,  # BM25检索30个
+            limit=top_k * 3,
             expr=filter_expr
         )
 
@@ -247,25 +248,16 @@ class AsyncMilvusClientWrapper:
             collection_name=self.collection_name,
             reqs=[dense_req, sparse_req],
             ranker=RRFRanker(),
-            limit=top_k * 3,  # 取前30个融合的结果
+            limit=top_k * 3,
             output_fields=["parent_id"]
         )
-    
-        """
-        results的结构如下：
-        data: [[
-        {'id': 465176452476909908, 'distance': 0.032258063554763794,'entity': {'parent_id': 'aed97ca4-aae4-41a8-9fbc-a912ec87c7fa'}},
-        {'id': 465176452476909873, 'distance': 0.03154495730996132, 'entity': {'parent_id': '7d8c5d53-1b74-4bbf-ae37-fcadf6c9b67d'}}, 
-        {'id': 465176452476909847, 'distance': 0.016393441706895828, 'entity': {'parent_id': '9becd140-9a4d-43b9-b0ab-7152cc19eacd'}}]],
-        {'cost': 6}
-        """
 
-        # 返回去重后的父块ID列表(子块去重的步骤在这，需要检索的父块数量在0-3*top_k之间)
+        # 返回去重后的父块ID列表
         return list(set([hit["entity"]["parent_id"] for hit in results[0]]))
 
     async def search_dense_only(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 30):
         """仅使用稠密向量检索（语义）"""
-        await self._ensure_initialized()
+        # 移除 _ensure_initialized 调用，因为启动时已经初始化
 
         # 生成查询向量
         query_vector = self.embeddings.embed_query(query)
@@ -310,16 +302,16 @@ class AsyncMilvusClientWrapper:
 
     async def delete_file_by_hash(self, knowledge_base_id: str, file_hash: str):
         """根据文件哈希删除整个文件的所有子块"""
-        await self._ensure_initialized()
+        # 移除 _ensure_initialized 调用，因为启动时已经初始化
 
         # 构造过滤条件
         filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and metadata["file_hash"] == "{file_hash}"'
 
-        # 异步查询要删除的数据（需要获取 child_chunk_hash）
+        # 异步查询要删除的数据
         results = await self.client.query(
             collection_name=self.collection_name,
             filter=filter_expr,
-            output_fields=["chunk_id", "metadata"]  # 添加 metadata 字段
+            output_fields=["chunk_id", "metadata"]
         )
 
         if results:
@@ -338,12 +330,13 @@ class AsyncMilvusClientWrapper:
             )
 
             # 批量删除块哈希
-            if chunk_hashes:
+            if chunk_hashes and self.hash_storage:
                 await self.hash_storage.remove_chunk_hashes_batch(chunk_hashes)
                 logger.info(f"已删除 {len(chunk_hashes)} 个块哈希记录")
 
             # 从哈希存储中移除文件哈希
-            await self.hash_storage.remove_file_hash(file_hash)
+            if self.hash_storage:
+                await self.hash_storage.remove_file_hash(file_hash)
 
             logger.info(f"已删除文件哈希 {file_hash} 的 {len(results)} 个子块")
             return len(results)
@@ -353,12 +346,18 @@ class AsyncMilvusClientWrapper:
 
     async def close(self):
         """关闭客户端连接"""
-        await self.client.close()
-        logger.info("Milvus 客户端已关闭")
+        if self.client:
+            await self.client.close()
+            logger.info("Milvus 客户端已关闭")
 
-    async def __aenter__(self):
-        await self._ensure_initialized()
-        return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+_global_milvus_client = None
+
+async def get_milvus_client(hash_storage: Optional["HashStorage"] = None):
+    """获取全局 Milvus 客户端实例"""
+    global _global_milvus_client
+    if _global_milvus_client is None:
+        _global_milvus_client = AsyncMilvusClientWrapper(hash_storage)
+        # 启动时立即初始化集合，而不是等到第一次请求
+        await _global_milvus_client.ensure_collection()
+    return _global_milvus_client

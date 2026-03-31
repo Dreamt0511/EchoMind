@@ -3,8 +3,8 @@ from hash_storage import HashStorage
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
 from typing import List, Dict, Optional
 from schemas import DocumentUploadResponse, DocumentDeleteResponse, DocumentRetrievalResponse
-from postgresql_client import PostgreSQLParentClient
-from milvus_client import AsyncMilvusClientWrapper
+from postgresql_client import get_postgresql_client
+from milvus_client import get_milvus_client
 import logging
 import sys
 import asyncio
@@ -189,17 +189,17 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
     deleted_child_count = 0
 
     try:
-        # 删除 PostgreSQL中的父块
-        async with PostgreSQLParentClient() as postgresql_client:
-            deleted_parent_count = await postgresql_client.delete_all_file(
-                knowledge_base_id, file_hash
-            )
+        # 删除 PostgreSQL中的父块 - 使用全局客户端
+        postgresql_client = await get_postgresql_client()
+        deleted_parent_count = await postgresql_client.delete_all_file(
+            knowledge_base_id, file_hash
+        )
 
-        # 删除 Milvus中的子块
-        async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
-            deleted_child_count = await milvus_client.delete_file_by_hash(
-                knowledge_base_id, file_hash
-            )
+        # 删除 Milvus中的子块 - 使用全局客户端
+        milvus_client = await get_milvus_client(hash_storage)
+        deleted_child_count = await milvus_client.delete_file_by_hash(
+            knowledge_base_id, file_hash
+        )
         
     except Exception as e:
         logger.error(f"删除失败: {e}")
@@ -213,30 +213,35 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
 
 @router.get("/documents/retrieval", response_model=DocumentRetrievalResponse)
 async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
-    """检索文档"""
+    """检索文档（优化版）"""
     logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
-    async with AsyncMilvusClientWrapper(hash_storage=hash_storage) as milvus_client:
-        parent_chunkId_list = await milvus_client.hybrid_retrieval(
-            query, knowledge_base_id, top_k)
+    
+    # 使用全局 Milvus 客户端
+    milvus_client = await get_milvus_client(hash_storage)
+    parent_chunkId_list = await milvus_client.hybrid_retrieval(
+        query, knowledge_base_id, top_k)
 
-        logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
-        # 从 PostgreSQL获取父块
-        async with PostgreSQLParentClient() as postgresql_client:
-            parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
-            # 提取父块文本列表
-            text_list = [doc.text for doc in parent_documents]
-            # 重排序父块
-            logger.info(f"{'---'*20}开始重排序父块rerank_documents{'---'*20}")
-            rerank_result = await rerank_documents(query, text_list, top_k)
+    logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
+    
+    # 使用全局 PostgreSQL 客户端
+    postgresql_client = await get_postgresql_client()
+    parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
+    
+    # 提取父块文本列表
+    text_list = [doc.text for doc in parent_documents]
+    
+    # 重排序父块
+    logger.info(f"{'---'*20}开始重排序父块rerank_documents{'---'*20}")
+    rerank_result = await rerank_documents(query, text_list, top_k)
 
-            related_documents = []
-            if not rerank_result:
-                # 重排序失败的情况下降级取RRF融合后的前10个片段
-                related_documents = parent_documents[:top_k]
-            else:
-                for item in rerank_result['output']['results']:
-                    related_documents.append(item['document']['text'])
-                related_documents = related_documents[:top_k]
+    related_documents = []
+    if not rerank_result:
+        # 重排序失败的情况下降级取RRF融合后的前10个片段
+        related_documents = parent_documents[:top_k]
+    else:
+        for item in rerank_result['output']['results']:
+            related_documents.append(item['document']['text'])
+        related_documents = related_documents[:top_k]
 
     logger.info(f"{'---'*20}检索完成{'---'*20}")
 
@@ -248,5 +253,3 @@ rerank_result的结构示例：
 'relevance_score': 0.886919463597282}]}, 'usage': {'total_tokens': 1224}, 
 'request_id': '2252323b-a3ba-4ef5-a203-e305b64249e1'}  
 """
-
-
