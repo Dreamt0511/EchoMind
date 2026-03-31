@@ -215,23 +215,36 @@ class AsyncMilvusClientWrapper:
 
     async def hybrid_retrieval(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
         """混合检索，返回去重后的父块ID列表"""
-        # 移除 _ensure_initialized 调用，因为启动时已经初始化
-
         # 构建过滤表达式
         if knowledge_base_id:
             filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
         else:
             filter_expr = None
 
-        # 生成稠密向量
-        dense_vector = self.embeddings.embed_query(query)
+        # 生成稠密向量，带重试机制
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                dense_vector = await self.embeddings.aembed_query(query)
+                break  # 成功则跳出循环
+            except Exception as e:
+                logger.error(f"Embedding API 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt == max_retries - 1:  # 最后一次尝试失败
+                    logger.error(f"Embedding API 最终失败，返回空结果")
+                    return []  # 返回空列表，避免程序崩溃
+                else:
+                    logger.warning(f"等待 1 秒后重试...")
+                    await asyncio.sleep(1)
+                    continue
 
         # 创建搜索请求
         dense_req = AnnSearchRequest(
             data=[dense_vector],
             anns_field="dense_vector",
             param={"metric_type": "COSINE", "params": {"ef": 64}},
-            limit=top_k * 10,
+            limit=top_k * 7,  # 语义召回70条
             expr=filter_expr
         )
 
@@ -239,21 +252,25 @@ class AsyncMilvusClientWrapper:
             data=[query],
             anns_field="sparse_bm25",
             param={"metric_type": "BM25"},
-            limit=top_k * 3,
+            limit=top_k * 3,  # bm25召回30条
             expr=filter_expr
         )
 
         # 异步混合检索
-        results = await self.client.hybrid_search(
-            collection_name=self.collection_name,
-            reqs=[dense_req, sparse_req],
-            ranker=RRFRanker(),
-            limit=top_k * 3,
-            output_fields=["parent_id"]
-        )
-
-        # 返回去重后的父块ID列表
-        return list(set([hit["entity"]["parent_id"] for hit in results[0]]))
+        try:
+            results = await self.client.hybrid_search(
+                collection_name=self.collection_name,
+                reqs=[dense_req, sparse_req],
+                ranker=RRFRanker(),
+                limit=top_k * 3,
+                output_fields=["parent_id"]
+            )
+            
+            # 返回去重后的父块ID列表
+            return list(set([hit["entity"]["parent_id"] for hit in results[0]]))
+        except Exception as e:
+            logger.error(f"混合检索失败: {e}")
+            return []
 
     async def search_dense_only(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 30):
         """仅使用稠密向量检索（语义）"""

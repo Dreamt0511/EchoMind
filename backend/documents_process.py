@@ -203,10 +203,10 @@ class DocumentProcessor:
 
 async def rerank_documents(query: str, documents: list, top_n=5):
     """
-    一个通用的重排序API调用模板
+    一个通用的重排序API调用模板，带重试机制
     """
     # 优化：限制输入文档数量
-    max_input = min(top_n * 3, 30)  # 最多20个文档
+    max_input = min(top_n * 3, 30)  # 最多30个文档
     if len(documents) > max_input:
         logger.info(f"重排序输入文档数从 {len(documents)} 截取到 {max_input}")
         documents = documents[:max_input]
@@ -239,18 +239,44 @@ async def rerank_documents(query: str, documents: list, top_n=5):
         }
     }
     
-    # 发送请求 - 添加超时控制
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:  # 3秒超时
-            response = await client.post(url, headers=headers, json=payload)
-        if response.status_code == HTTPStatus.OK:
-            return response.json()
-        else:
-            logger.error(f"API 请求失败: {response.status_code}")
-            return None  # 返回 None 而不是 False
-    except httpx.TimeoutException:
-        logger.warning("重排序 API 超时，使用原始结果")
-        return None
-    except Exception as e:
-        logger.error(f"重排序请求发生异常: {e}")
-        return None  # 返回 None 触发降级
+    # 重试逻辑：最多3次，间隔1秒
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:  # 3秒超时
+                response = await client.post(url, headers=headers, json=payload)
+            
+            if response.status_code == HTTPStatus.OK:
+                return response.json()
+            else:
+                logger.error(f"API 请求失败 (尝试 {attempt + 1}/{max_retries}): {response.status_code}")
+                if attempt == max_retries - 1:
+                    logger.error(f"重排序 API 最终失败，返回 None")
+                    return None
+                else:
+                    logger.warning(f"等待 1 秒后重试...")
+                    await asyncio.sleep(1)
+                    continue
+                    
+        except httpx.TimeoutException as e:
+            logger.error(f"重排序 API 超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                logger.warning("重排序 API 最终超时，使用原始结果")
+                return None
+            else:
+                logger.warning(f"等待 1 秒后重试...")
+                await asyncio.sleep(1)
+                continue
+                
+        except Exception as e:
+            logger.error(f"重排序请求发生异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                logger.error(f"重排序 API 最终失败，返回 None")
+                return None
+            else:
+                logger.warning(f"等待 1 秒后重试...")
+                await asyncio.sleep(1)
+                continue
+    
+    return None  # 返回 None 触发降级

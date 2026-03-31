@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict,Union
 
 class DocumentUploadResponse(BaseModel):
     "文件上传响应模型"
@@ -15,5 +15,11 @@ class DocumentDeleteResponse(BaseModel):
     message: str
     knowledge_base_id : str
 
+
+class RerankDocumentItem(BaseModel):
+    text: str
+    relevance_score: Optional[float] = None
+
 class DocumentRetrievalResponse(BaseModel):
-    parent_documents: List[str]
+    parent_documents: List[Union[str, RerankDocumentItem]]
+

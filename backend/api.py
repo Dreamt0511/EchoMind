@@ -2,7 +2,7 @@ from documents_process import TempDocumentProcessor, DocumentProcessor, rerank_d
 from hash_storage import HashStorage
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
 from typing import List, Dict, Optional
-from schemas import DocumentUploadResponse, DocumentDeleteResponse, DocumentRetrievalResponse
+from schemas import DocumentUploadResponse, DocumentDeleteResponse, DocumentRetrievalResponse,RerankDocumentItem
 from postgresql_client import get_postgresql_client
 from milvus_client import get_milvus_client
 import logging
@@ -218,8 +218,7 @@ async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None
     
     # 使用全局 Milvus 客户端
     milvus_client = await get_milvus_client(hash_storage)
-    parent_chunkId_list = await milvus_client.hybrid_retrieval(
-        query, knowledge_base_id, top_k)
+    parent_chunkId_list = await milvus_client.hybrid_retrieval(query, knowledge_base_id, top_k)
 
     logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
     
@@ -236,13 +235,18 @@ async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None
 
     related_documents = []
     if not rerank_result:
-        # 重排序失败的情况下降级取RRF融合后的前10个片段
-        related_documents = parent_documents[:top_k]
+        # 重排序失败：返回字符串列表
+        related_documents = text_list[:top_k]
     else:
+        # 重排序成功：返回 RerankDocumentItem 对象列表
         for item in rerank_result['output']['results']:
-            related_documents.append(item['document']['text'])
+            related_document = RerankDocumentItem(
+                text=item['document']['text'],
+                relevance_score=item['relevance_score']
+            )
+            related_documents.append(related_document)
         related_documents = related_documents[:top_k]
-
+        
     logger.info(f"{'---'*20}检索完成{'---'*20}")
 
     return DocumentRetrievalResponse(parent_documents=related_documents)
