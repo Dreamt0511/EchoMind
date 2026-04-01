@@ -214,7 +214,7 @@ class AsyncMilvusClientWrapper:
         return result
 
     async def hybrid_retrieval(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
-        """混合检索，返回去重后的父块ID列表"""
+        """混合检索，返回去重后的父块ID列表，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
         # 构建过滤表达式
         if knowledge_base_id:
             filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
@@ -223,14 +223,12 @@ class AsyncMilvusClientWrapper:
 
         # 生成稠密向量，带重试机制
         max_retries = 3
-        
         for attempt in range(max_retries):
             try:
                 dense_vector = await self.embeddings.aembed_query(query)
                 break  # 成功则跳出循环
             except Exception as e:
                 logger.error(f"Embedding API 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                
                 if attempt == max_retries - 1:  # 最后一次尝试失败
                     logger.error(f"Embedding API 最终失败，返回空结果")
                     return []  # 返回空列表，避免程序崩溃
@@ -255,7 +253,6 @@ class AsyncMilvusClientWrapper:
             limit=top_k * 3,  # bm25召回30条
             expr=filter_expr
         )
-
         # 异步混合检索
         try:
             results = await self.client.hybrid_search(
@@ -265,57 +262,39 @@ class AsyncMilvusClientWrapper:
                 limit=top_k * 3,
                 output_fields=["parent_id"]
             )
-            
+            """
+            results的结构如下：
+            data: [[
+            {'id': 465176452476909908, 'distance': 0.032258063554763794,'entity': {'parent_id': 'aed97ca4-aae4-41a8-9fbc-a912ec87c7fa'}},
+            {'id': 465176452476909873, 'distance': 0.03154495730996132, 'entity': {'parent_id': '7d8c5d53-1b74-4bbf-ae37-fcadf6c9b67d'}}, 
+            {'id': 465176452476909847, 'distance': 0.016393441706895828, 'entity': {'parent_id': '9becd140-9a4d-43b9-b0ab-7152cc19eacd'}}]],
+            {'cost': 6}
+            """
             # 返回去重后的父块ID列表
             return list(set([hit["entity"]["parent_id"] for hit in results[0]]))
         except Exception as e:
-            logger.error(f"混合检索失败: {e}")
-            return []
+            logger.error(f"混合检索失败: {e},降级为稠密向量检索")
+            
+            results = await self.client.search(
+                collection_name=self.collection_name,
+                data=[dense_vector],
+                anns_field="dense_vector",
+                param={"metric_type": "COSINE", "params": {"ef": 64}},
+                limit=top_k,
+                filter=filter_expr,
+                output_fields=["parent_id"]
+            )
+            # 处理结果
+            parent_ids = set()
 
-    async def search_dense_only(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 30):
-        """仅使用稠密向量检索（语义）"""
-        # 移除 _ensure_initialized 调用，因为启动时已经初始化
+            if results and len(results) > 0:
+                for hit in results[0]:
+                    entity = hit["entity"]
+                    parent_id = entity.get("parent_id")
+                    parent_ids.add(parent_id)
+            return list(parent_ids)
 
-        # 生成查询向量
-        query_vector = self.embeddings.embed_query(query)
-
-        # 构建过滤表达式
-        filter_expr = None
-        if knowledge_base_id:
-            filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
-
-        # 异步搜索
-        results = await self.client.search(
-            collection_name=self.collection_name,
-            data=[query_vector],
-            anns_field="dense_vector",
-            param={"metric_type": "COSINE", "params": {"ef": 64}},
-            limit=top_k,
-            filter=filter_expr,
-            output_fields=["parent_id", "chunk_id", "chunk_index", "text"]
-        )
-
-        # 处理结果
-        parent_ids = set()
-        matched_chunks = []
-
-        if results and len(results) > 0:
-            for hit in results[0]:
-                entity = hit["entity"]
-                parent_id = entity.get("parent_id")
-                parent_ids.add(parent_id)
-                matched_chunks.append({
-                    "parent_id": parent_id,
-                    "chunk_id": entity.get("chunk_id"),
-                    "text": entity.get("text"),
-                    "score": hit["score"],
-                    "chunk_index": entity.get("chunk_index", -1)
-                })
-
-        return {
-            "parent_ids": list(parent_ids),
-            "matched_chunks": matched_chunks
-        }
+        
 
     async def delete_file_by_hash(self, knowledge_base_id: str, file_hash: str):
         """根据文件哈希删除整个文件的所有子块"""

@@ -28,3 +28,6 @@ backend/.env
 
 #忽略data文件夹
 data
+
+#忽略.clade文件夹
+.clade
