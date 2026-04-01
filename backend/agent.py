@@ -37,60 +37,38 @@ agent = create_agent(
 )
 
 async def stream_agent_response(user_message: str) -> AsyncGenerator[str, None]:
-    """
-    异步流式处理 agent 响应，返回生成器供 StreamingResponse 使用
-    
-    Args:
-        user_message: 用户输入的消息
-        
-    Yields:
-        str: 流式输出的文本块
-    """
     try:
-        # 使用 astream 进行异步流式处理
         async for chunk in agent.astream(
             {"messages": [{"role": "user", "content": user_message}]},
-            stream_mode="messages"
+            stream_mode=["messages", "custom"]
         ):
-            message_chunk, metadata = chunk
-            
-            # 获取当前节点类型
-            node = metadata.get('langgraph_node', '')
-            
-            # 如果是模型节点，输出 AI 响应的文本内容
-            if node == 'model' and hasattr(message_chunk, 'content') and message_chunk.content:
-                # 直接输出文本内容
-                print(message_chunk.content)
-                yield message_chunk.content
-            
-            # 如果是工具节点，输出工具调用信息（可选，可以注释掉）
-            elif node == 'tools' and hasattr(message_chunk, 'name'):
-                # 可以选择是否输出工具调用信息给前端
-                # 如果需要，可以以特殊格式输出，如 SSE 格式
-                tool_info = {
-                    "type": "tool_call",
-                    "name": message_chunk.name,
-                    "status": "completed"
-                }
-                # 使用 SSE 格式输出工具调用信息
-                yield f"data: {json.dumps(tool_info)}\n\n"
-                
-                # 可选：输出文档数量信息
-                if hasattr(message_chunk, 'content'):
-                    try:
-                        content = json.loads(message_chunk.content) if isinstance(message_chunk.content, str) else message_chunk.content
-                        if isinstance(content, list):
-                            doc_info = {
-                                "type": "tool_result",
-                                "doc_count": len(content)
-                            }
-                            yield f"data: {json.dumps(doc_info)}\n\n"
-                    except:
-                        pass
-           
+            stream_mode, chunk_data = chunk
+
+            # ---------------- 回答内容 ----------------
+            if stream_mode == "messages":
+                message_chunk, metadata = chunk_data
+                node = metadata.get('langgraph_node', '')
+                if node == 'model' and hasattr(message_chunk, 'content') and message_chunk.content:
+                    yield json.dumps({
+                        "type": "answer",
+                        "content": message_chunk.content
+                    }, ensure_ascii=False) + "\n"
+
+            # ---------------- 工具状态（检索提示） ----------------
+            elif stream_mode == "custom":
+                custom_info = chunk_data
+                logger.info(f"【工具信息】: {custom_info}")
+                yield json.dumps({
+                    "type": "status",
+                    "content": custom_info
+                }, ensure_ascii=False) + "\n"
+
     except Exception as e:
-        logger.error(f"处理 agent 响应时发生错误: {e}")
-        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        logger.error(f"错误: {e}")
+        yield json.dumps({
+            "type": "error",
+            "content": str(e)
+        }, ensure_ascii=False) + "\n"
 
 async def main():
     """

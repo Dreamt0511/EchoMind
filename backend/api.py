@@ -214,7 +214,7 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
 
 
 @router.get("/chat_with_agent/stream")
-async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
+async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 5):
     """
     流式返回 agent 响应
     """

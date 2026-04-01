@@ -6,6 +6,8 @@ from schemas import RerankDocumentItem
 from milvus_client import get_milvus_client
 import logging
 import sys
+from langgraph.config import get_stream_writer
+import time
 
 # 配置日志
 logging.basicConfig(
@@ -30,15 +32,18 @@ async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数"
     - 通用常识、基础推理即可解答的问题
     - 基于已有记忆就能回答的个性化问题
     """
+    writer = get_stream_writer()
+    writer(f"正在检索知识库【{knowledge_base_id}】...")
     logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
+    start_time = time.time()
+
 
     # 使用全局 Milvus 客户端
     from api import hash_storage  # 避免循环导入问题
     milvus_client = await get_milvus_client(hash_storage)
     parent_chunkId_list = await milvus_client.hybrid_retrieval(query, knowledge_base_id, top_k)
 
-    logger.info(
-        f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
+    logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
 
     # 使用全局 PostgreSQL 客户端
     postgresql_client = await get_postgresql_client()
@@ -65,6 +70,8 @@ async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数"
             related_documents.append(related_document)
         related_documents = related_documents[:top_k]
 
+    end_time = time.time()
+    writer(f"✓ 检索完成，本次检索耗时{end_time - start_time:.2f}秒")
     logger.info(f"{'---'*20}检索完成{'---'*20}")
     return related_documents
 
