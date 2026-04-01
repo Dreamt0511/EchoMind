@@ -4,7 +4,6 @@ from documents_process import rerank_documents
 from postgresql_client import get_postgresql_client
 from schemas import RerankDocumentItem
 from milvus_client import get_milvus_client
-from api import hash_storage
 import logging
 import sys
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @tool("search_knowledge_base")
-async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数", top_k: int = 10) -> str:
+async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数", top_k: int = 5) -> str:
     """
     **功能**：从私有知识库检索相关文档、专业知识、业务规则和内部资料
     - **适用场景**：
@@ -34,6 +33,7 @@ async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数"
     logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
 
     # 使用全局 Milvus 客户端
+    from api import hash_storage  # 避免循环导入问题
     milvus_client = await get_milvus_client(hash_storage)
     parent_chunkId_list = await milvus_client.hybrid_retrieval(query, knowledge_base_id, top_k)
 
@@ -67,3 +67,11 @@ async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数"
 
     logger.info(f"{'---'*20}检索完成{'---'*20}")
     return related_documents
+
+
+"""
+rerank_result的结构示例：
+{'output': {'results': [{'document': {'text': '20 世纪80 年代末'}, 'index': 0, 
+'relevance_score': 0.886919463597282}]}, 'usage': {'total_tokens': 1224}, 
+'request_id': '2252323b-a3ba-4ef5-a203-e305b64249e1'}  
+"""

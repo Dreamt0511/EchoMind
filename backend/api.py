@@ -12,6 +12,8 @@ import hashlib
 import uuid
 import aiofiles
 import os
+from fastapi.responses import StreamingResponse
+from agent import stream_agent_response
 
 # 配置日志
 logging.basicConfig(
@@ -211,49 +213,12 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
     )
 
 
-@router.get("/documents/retrieval", response_model=DocumentRetrievalResponse)
+@router.get("/chat_with_agent/stream")
 async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
-    """检索文档（优化版）"""
-    logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
-    
-    # 使用全局 Milvus 客户端
-    milvus_client = await get_milvus_client(hash_storage)
-    parent_chunkId_list = await milvus_client.hybrid_retrieval(query, knowledge_base_id, top_k)
-
-    logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
-    
-    # 使用全局 PostgreSQL 客户端
-    postgresql_client = await get_postgresql_client()
-    parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
-    
-    # 提取父块文本列表
-    text_list = [doc.text for doc in parent_documents]
-    
-    # 重排序父块
-    logger.info(f"{'---'*20}开始重排序父块rerank_documents{'---'*20}")
-    rerank_result = await rerank_documents(query, text_list, top_k)
-
-    related_documents = []
-    if not rerank_result:
-        # 重排序失败：返回字符串列表
-        related_documents = text_list[:top_k]
-    else:
-        # 重排序成功：返回 RerankDocumentItem 对象列表
-        for item in rerank_result['output']['results']:
-            related_document = RerankDocumentItem(
-                text=item['document']['text'],
-                relevance_score=item['relevance_score']
-            )
-            related_documents.append(related_document)
-        related_documents = related_documents[:top_k]
-        
-    logger.info(f"{'---'*20}检索完成{'---'*20}")
-
-    return DocumentRetrievalResponse(parent_documents=related_documents)
-
-"""
-rerank_result的结构示例：
-{'output': {'results': [{'document': {'text': '20 世纪80 年代末'}, 'index': 0, 
-'relevance_score': 0.886919463597282}]}, 'usage': {'total_tokens': 1224}, 
-'request_id': '2252323b-a3ba-4ef5-a203-e305b64249e1'}  
-"""
+    """
+    流式返回 agent 响应
+    """
+    return StreamingResponse(
+        stream_agent_response(query),
+        media_type="text/plain; charset=utf-8"
+    )
