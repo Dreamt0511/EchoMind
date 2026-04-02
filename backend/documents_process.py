@@ -106,16 +106,12 @@ class DocumentProcessor:
             for parent_index, parent_chunk in enumerate(parent_chunks):
                 parent_id = str(uuid.uuid4())
                 
-                parent_chunk.metadata.update({
-                    "file_name": filename,
-                    "file_hash": file_hash,
-                })
-                
                 parent_data_list.append({
                     "parent_id": parent_id,
                     "knowledge_base_id": knowledge_base_id,
                     "text": parent_chunk.page_content,
-                    "metadata": parent_chunk.metadata
+                    "file_name": filename,
+                    "file_hash": file_hash,
                 })
                 
                 child_chunks = self.child_splitter.split_documents([parent_chunk])
@@ -182,7 +178,7 @@ class DocumentProcessor:
         
         # 批量插入postgresql数据库 - 使用全局客户端
         postgresql_client = await get_postgresql_client()
-        await postgresql_client.add_parents_batch(parent_data_list)
+        await postgresql_client.add_parent_chunk_batch(parent_data_list)
         logger.info(f"==========批量插入父块到postgresql完成==========")
 
         

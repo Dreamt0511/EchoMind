@@ -193,15 +193,11 @@ async def delete_file(file_hash: str, knowledge_base_id: str):
     try:
         # 删除 PostgreSQL中的父块 - 使用全局客户端
         postgresql_client = await get_postgresql_client()
-        deleted_parent_count = await postgresql_client.delete_all_file(
-            knowledge_base_id, file_hash
-        )
+        deleted_parent_count = await postgresql_client.delete_file_by_hash(knowledge_base_id=knowledge_base_id, file_hash=file_hash)
 
         # 删除 Milvus中的子块 - 使用全局客户端
         milvus_client = await get_milvus_client(hash_storage)
-        deleted_child_count = await milvus_client.delete_file_by_hash(
-            knowledge_base_id, file_hash
-        )
+        deleted_child_count = await milvus_client.delete_file_by_hash(knowledge_base_id=knowledge_base_id, file_hash=file_hash)
         
     except Exception as e:
         logger.error(f"删除失败: {e}")

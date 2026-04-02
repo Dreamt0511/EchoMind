@@ -1,8 +1,4 @@
-from langchain_community.document_loaders import PyMuPDFLoader,Docx2txtLoader
+from memsearch import MemSearch
 
-loader = PyMuPDFLoader("./data/数据库原理简答题总结.pdf")
-
-docs  = loader.load()
-
-docs2 = Docx2txtLoader("./data/2023212010-张飞龙-第4次作业 .docx").load()
-print(docs2)
+# 列出所有属性和方法
+print(dir(MemSearch))
