@@ -186,7 +186,7 @@ async def file_upload(
 
 
 @router.delete("/documents", response_model=DocumentDeleteResponse)
-async def delete_document(file_hash: str, knowledge_base_id: str):
+async def delete_file(file_hash: str, knowledge_base_id: str):
     deleted_parent_count = 0
     deleted_child_count = 0
 
@@ -214,11 +214,12 @@ async def delete_document(file_hash: str, knowledge_base_id: str):
 
 
 @router.get("/chat_with_agent/stream")
-async def retrieval_document(query: str, knowledge_base_id: Optional[str] = None, top_k: int = 5):
+async def chat_with_agent(query: str, knowledge_base_id: str, top_k: int = 5):
+    print("当前知识库ID:", knowledge_base_id)
     """
     流式返回 agent 响应
     """
     return StreamingResponse(
-        stream_agent_response(query),
+        stream_agent_response(knowledge_base_id=knowledge_base_id, user_message=query),
         media_type="text/plain; charset=utf-8"
     )

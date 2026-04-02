@@ -36,10 +36,10 @@ agent = create_agent(
     system_prompt=config.SYSTEM_PROMPT
 )
 
-async def stream_agent_response(user_message: str) -> AsyncGenerator[str, None]:
+async def stream_agent_response(user_message: str, knowledge_base_id: str) -> AsyncGenerator[str, None]:
     try:
         async for chunk in agent.astream(
-            {"messages": [{"role": "user", "content": user_message}]},
+            {"messages": [{"role": "user", "content": user_message + f"（知识库ID: {knowledge_base_id}）"}]},
             stream_mode=["messages", "custom"]
         ):
             stream_mode, chunk_data = chunk

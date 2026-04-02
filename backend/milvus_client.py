@@ -213,13 +213,13 @@ class AsyncMilvusClientWrapper:
         logger.info(f"已添加 {len(data)} 个子块到 Milvus（知识库: {knowledge_base_id}）")
         return result
 
-    async def hybrid_retrieval(self, query: str, knowledge_base_id: Optional[str] = None, top_k: int = 10):
+    async def hybrid_retrieval(self, query: str, knowledge_base_id: str, top_k: int = 10):
         """混合检索，返回去重后的父块ID列表，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
         # 构建过滤表达式
-        if knowledge_base_id:
-            filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
+        if knowledge_base_id == "默认知识库":
+            filter_expr = None  # 不添加过滤条件，搜索全部知识库
         else:
-            filter_expr = None
+            filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'# 构建过滤表达式，限制在指定知识库内搜索
 
         # 生成稠密向量，带重试机制
         max_retries = 3

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 @tool("search_knowledge_base")
-async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数", top_k: int = 5) -> str:
+async def search_knowledge_base(query: str, knowledge_base_id: str, top_k: int = 5) -> str:
     """
     **功能**：从私有知识库检索相关文档、专业知识、业务规则和内部资料
     - **适用场景**：
@@ -33,7 +33,7 @@ async def search_knowledge_base(query: str, knowledge_base_id: str = "多页数"
     - 基于已有记忆就能回答的个性化问题
     """
     writer = get_stream_writer()
-    writer(f"正在检索知识库【{knowledge_base_id}】...")
+    writer(f"🔍 正在检索知识库【{knowledge_base_id}】...")
     logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
     start_time = time.time()
 
