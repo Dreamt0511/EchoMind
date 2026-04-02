@@ -1,7 +1,6 @@
 import asyncpg
-import json
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from dotenv import load_dotenv
@@ -136,39 +135,60 @@ class PostgreSQLParentClient:
                             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                         );
 
-                        -- 2. 文件信息表
+                        -- 2. 知识库表（关联用户，支持级联删除）
+                        CREATE TABLE IF NOT EXISTS knowledge_bases (
+                            knowledge_base_id VARCHAR(128) NOT NULL,
+                            user_id INTEGER NOT NULL,
+                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (knowledge_base_id, user_id),
+                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                        );
+
+                        -- 3. 文件信息表（关联知识库和用户，支持级联删除）
                         CREATE TABLE IF NOT EXISTS file_metadata (
-                            file_hash VARCHAR(64) PRIMARY KEY,
+                            file_hash VARCHAR(64) NOT NULL,
                             file_name VARCHAR(255) NOT NULL,
-                            knowledge_base_id VARCHAR(128) NOT NULL, 
-                            uploaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                            knowledge_base_id VARCHAR(128) NOT NULL,
+                            user_id INTEGER NOT NULL,
+                            uploaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (file_hash, knowledge_base_id, user_id),
+                            FOREIGN KEY (knowledge_base_id, user_id) REFERENCES knowledge_bases(knowledge_base_id, user_id) ON DELETE CASCADE
                         );               
                         
-                        -- 3. 父块表，存储父块文本和关联的文件信息
+                        -- 4. 父块表（关联文件，支持级联删除）
                         CREATE TABLE IF NOT EXISTS parent_chunks (
-                            parent_id VARCHAR(128) PRIMARY KEY,
+                            parent_id VARCHAR(128) NOT NULL,
                             knowledge_base_id VARCHAR(128) NOT NULL,
+                            user_id INTEGER NOT NULL,
                             text TEXT NOT NULL,
                             file_name VARCHAR(255) NOT NULL,
                             file_hash VARCHAR(64) NOT NULL,
                             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (parent_id, knowledge_base_id, user_id),
+                            FOREIGN KEY (file_hash, knowledge_base_id, user_id) REFERENCES file_metadata(file_hash, knowledge_base_id, user_id) ON DELETE CASCADE
+                        );
+                        
+                        -- 5. 块哈希表（关联文件，支持级联删除）
+                        CREATE TABLE IF NOT EXISTS chunk_hashes (
+                            chunk_hash VARCHAR(64) NOT NULL,
+                            file_hash VARCHAR(64) NOT NULL,
+                            knowledge_base_id VARCHAR(128) NOT NULL,
+                            user_id INTEGER NOT NULL,
+                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (chunk_hash, file_hash, knowledge_base_id, user_id),
+                            FOREIGN KEY (file_hash, knowledge_base_id, user_id) REFERENCES file_metadata(file_hash, knowledge_base_id, user_id) ON DELETE CASCADE
                         );
                     """)
 
                     await conn.execute("""
-                        -- 4. 知识库-用户关联表
-                        CREATE TABLE IF NOT EXISTS user_knowledge_bases (
-                            user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
-                            knowledge_base_id VARCHAR(128) NOT NULL,
-                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                            PRIMARY KEY (user_id, knowledge_base_id)
-                        );
-
-                        -- 索引
-                        CREATE INDEX IF NOT EXISTS idx_file_kb ON file_metadata(knowledge_base_id);
-                        CREATE INDEX IF NOT EXISTS idx_parent_kb ON parent_chunks(knowledge_base_id);
+                        -- 索引优化
+                        CREATE INDEX IF NOT EXISTS idx_file_kb_user ON file_metadata(knowledge_base_id, user_id);
+                        CREATE INDEX IF NOT EXISTS idx_parent_kb_user ON parent_chunks(knowledge_base_id, user_id);
                         CREATE INDEX IF NOT EXISTS idx_parent_file_hash ON parent_chunks(file_hash);
+                        CREATE INDEX IF NOT EXISTS idx_chunk_hash ON chunk_hashes(chunk_hash);
+                        CREATE INDEX IF NOT EXISTS idx_chunk_file_hash ON chunk_hashes(file_hash, knowledge_base_id, user_id);
+                        CREATE INDEX IF NOT EXISTS idx_kb_user ON knowledge_bases(user_id);
                     """)
 
                 self._pool_initialized = True
@@ -178,170 +198,298 @@ class PostgreSQLParentClient:
                 logger.error(f"Failed to initialize PostgreSQL client: {e}")
                 raise
 
-    async def get_parents(self, parent_ids: List[str]) -> List[ParentDocument]:
-        """批量获取父块"""
+    async def close(self):
+        """关闭连接池"""
+        if self.pool:
+            await self.pool.close()
+            logger.info("PostgreSQL connection pool closed")
+
+    # ============ 知识库管理 ============
+    
+    async def create_knowledge_base(self, knowledge_base_id: str, user_id: int):
+        """为用户创建知识库"""
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
-
-        if not parent_ids:
-            return []
-
+        
         try:
             async with self.pool.acquire() as conn:
-                results = await conn.fetch("""
-                    SELECT parent_id, knowledge_base_id, text, file_name, file_hash, created_at, updated_at
-                    FROM parent_chunks
-                    WHERE parent_id = ANY($1::text[])
-                """, parent_ids)
-
-                return [
-                    ParentDocument(
-                        parent_id=r['parent_id'],
-                        knowledge_base_id=r['knowledge_base_id'],
-                        text=r['text'],
-                        file_name=r['file_name'],
-                        file_hash=r['file_hash'],
-                        created_at=r['created_at'],
-                        updated_at=r['updated_at']
-                    ) for r in results
-                ]
-
+                await conn.execute("""
+                    INSERT INTO knowledge_bases (knowledge_base_id, user_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (knowledge_base_id, user_id) DO NOTHING
+                """, knowledge_base_id, user_id)
+                logger.info(f"为用户 {user_id} 创建知识库: {knowledge_base_id}")
         except Exception as e:
-            logger.error(f"Error getting parents: {e}")
+            logger.error(f"Error creating knowledge base: {e}")
             raise
-
-    async def delete_knowledge_base(self, knowledge_base_id: str) -> int:
-        """删除整个知识库的父块"""
+    
+    async def delete_knowledge_base(self, knowledge_base_id: str, user_id: int) -> Dict[str, int]:
+        """
+        删除整个知识库（级联删除会自动处理 file_metadata、parent_chunks、chunk_hashes）
+        返回删除的统计信息
+        """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
-
+        
         try:
             async with self.pool.acquire() as conn:
-                result = await conn.execute("""
-                    DELETE FROM parent_chunks WHERE knowledge_base_id = $1
-                """, knowledge_base_id)
-
-                return int(result.split()[-1]) if result.startswith("DELETE ") else 0
-
+                async with conn.transaction():
+                    # 获取要删除的文件数量（用于统计）
+                    file_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM file_metadata 
+                        WHERE knowledge_base_id = $1 AND user_id = $2
+                    """, knowledge_base_id, user_id)
+                    
+                    # 删除知识库（由于外键级联，会自动删除所有关联的文件、父块、块哈希）
+                    result = await conn.execute("""
+                        DELETE FROM knowledge_bases 
+                        WHERE knowledge_base_id = $1 AND user_id = $2
+                    """, knowledge_base_id, user_id)
+                    
+                    deleted_kb_count = int(result.split()[-1]) if result.startswith("DELETE ") else 0
+                    
+                    logger.info(f"删除知识库 {knowledge_base_id}（用户 {user_id}），关联的 {file_count} 个文件将被级联删除")
+                    
+                    return {
+                        "knowledge_bases_deleted": deleted_kb_count,
+                        "files_deleted": file_count
+                    }
         except Exception as e:
-            logger.error(
-                f"Error deleting knowledge base {knowledge_base_id}: {e}")
+            logger.error(f"Error deleting knowledge base {knowledge_base_id}: {e}")
+            raise
+    
+    async def get_user_knowledge_bases(self, user_id: int) -> List[str]:
+        """获取用户的所有知识库ID"""
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT knowledge_base_id 
+                    FROM knowledge_bases 
+                    WHERE user_id = $1
+                    ORDER BY created_at DESC
+                """, user_id)
+                return [row['knowledge_base_id'] for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting user knowledge bases: {e}")
             raise
 
-    async def add_parent_chunk_batch(self, parents_data: List[Dict[str, Any]]) -> int:
+    # ============ 文件哈希管理 ============
+    
+    async def is_file_duplicate(self, file_hash: str, knowledge_base_id: str, user_id: int) -> bool:
+        """检查文件哈希在指定用户的知识库中是否已存在"""
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.fetchval("""
+                    SELECT 1 FROM file_metadata 
+                    WHERE file_hash = $1 AND knowledge_base_id = $2 AND user_id = $3
+                    LIMIT 1
+                """, file_hash, knowledge_base_id, user_id)
+                return result is not None
+        except Exception as e:
+            logger.error(f"Error checking file duplicate: {e}")
+            raise
+
+    async def add_file_metadata(self, file_hash: str, file_name: str, knowledge_base_id: str, user_id: int):
+        """添加文件元数据"""
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO file_metadata (file_hash, file_name, knowledge_base_id, user_id)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (file_hash, knowledge_base_id, user_id) DO UPDATE 
+                    SET file_name = EXCLUDED.file_name
+                """, file_hash, file_name, knowledge_base_id, user_id)
+                logger.info(f"添加文件元数据: {file_hash[:16]}... 到知识库 {knowledge_base_id}（用户 {user_id}）")
+        except Exception as e:
+            logger.error(f"Error adding file metadata: {e}")
+            raise
+
+    async def delete_file(self, file_hash: str, knowledge_base_id: str, user_id: int) -> Dict[str, int]:
+        """
+        删除单个文件（级联删除会自动处理 parent_chunks 和 chunk_hashes）
+        返回删除的统计信息
+        """
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # 获取要删除的父块数量（用于统计）
+                    parent_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM parent_chunks 
+                        WHERE file_hash = $1 AND knowledge_base_id = $2 AND user_id = $3
+                    """, file_hash, knowledge_base_id, user_id)
+                    
+                    # 删除文件元数据（由于外键级联，会自动删除关联的父块和块哈希）
+                    result = await conn.execute("""
+                        DELETE FROM file_metadata 
+                        WHERE file_hash = $1 AND knowledge_base_id = $2 AND user_id = $3
+                    """, file_hash, knowledge_base_id, user_id)
+                    
+                    deleted_file_count = int(result.split()[-1]) if result.startswith("DELETE ") else 0
+                    
+                    logger.info(f"删除文件 {file_hash[:16]}（知识库 {knowledge_base_id}，用户 {user_id}），关联的 {parent_count} 个父块将被级联删除")
+                    
+                    return {
+                        "files_deleted": deleted_file_count,
+                        "parent_chunks_deleted": parent_count
+                    }
+        except Exception as e:
+            logger.error(f"Error deleting file: {e}")
+            raise
+
+    async def get_knowledge_base_files(self, knowledge_base_id: str, user_id: int) -> List[Dict]:
+        """获取知识库中的所有文件"""
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT file_hash, file_name, uploaded_at
+                    FROM file_metadata
+                    WHERE knowledge_base_id = $1 AND user_id = $2
+                    ORDER BY uploaded_at DESC
+                """, knowledge_base_id, user_id)
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting knowledge base files: {e}")
+            raise
+
+    # ============ 父块管理 ============
+    
+    async def add_parent_chunk_batch(self, parents_data: List[Dict[str, any]], user_id: int) -> int:
         """
         批量添加父块
         parents_data 格式: [{"parent_id": "...", "knowledge_base_id": "...", "text": "...", "file_name": "...", "file_hash": "..."}]
         """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
-
+        
+        if not parents_data:
+            return 0
+        
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     for data in parents_data:
-                        await conn.execute(
-                        """
-                        INSERT INTO parent_chunks (parent_id, knowledge_base_id, text, file_name, file_hash)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (parent_id) DO UPDATE 
-                        SET text = EXCLUDED.text, 
-                        file_name = EXCLUDED.file_name, 
-                        file_hash = EXCLUDED.file_hash,
-                        updated_at = CURRENT_TIMESTAMP
+                        await conn.execute("""
+                            INSERT INTO parent_chunks (parent_id, knowledge_base_id, user_id, text, file_name, file_hash)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            ON CONFLICT (parent_id, knowledge_base_id, user_id) DO UPDATE 
+                            SET text = EXCLUDED.text, 
+                                file_name = EXCLUDED.file_name, 
+                                file_hash = EXCLUDED.file_hash,
+                                updated_at = CURRENT_TIMESTAMP
                         """, 
-                        data["parent_id"], data["knowledge_base_id"], data["text"], data["file_name"], data["file_hash"])
+                        data["parent_id"], data["knowledge_base_id"], user_id, 
+                        data["text"], data["file_name"], data["file_hash"])
+            
+            logger.info(f"批量添加 {len(parents_data)} 个父块（用户 {user_id}）")
             return len(parents_data)
         except Exception as e:
             logger.error(f"Error batch adding parents: {e}")
             raise
-
-    async def get_user_knowledge_bases(self, user_id: int) -> List[str]:
-        """获取用户的所有知识库名称"""
+    
+    async def get_parents(self, parent_ids: List[str], knowledge_base_id: str, user_id: int) -> List[Dict]:
+        """批量获取父块"""
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
+        
+        if not parent_ids:
+            return []
+        
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT parent_id, knowledge_base_id, user_id, text, file_name, file_hash, created_at, updated_at
+                    FROM parent_chunks
+                    WHERE parent_id = ANY($1::text[]) 
+                    AND knowledge_base_id = $2 
+                    AND user_id = $3
+                """, parent_ids, knowledge_base_id, user_id)
+                
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting parents: {e}")
+            raise
 
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT knowledge_base_id 
-                FROM user_knowledge_bases 
-                WHERE user_id = $1
-            """, user_id)
-            return [row['knowledge_base_id'] for row in rows]
 
-    async def get_knowledge_base_files(self, knowledge_base_id: str) -> List[Dict]:
-        """获取知识库中的所有文件（从 file_metadata 表读取）"""
-        if not self.pool:
-            raise RuntimeError("Connection pool not initialized")
-
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT file_hash, file_name, uploaded_at
-                FROM file_metadata
-                WHERE knowledge_base_id = $1
-                ORDER BY uploaded_at DESC
-            """, knowledge_base_id)
-            return [dict(row) for row in rows]
-
-    async def add_file_metadata(self, file_hash: str, file_name: str, knowledge_base_id: str):
-        """添加文件元数据"""
-        if not self.pool:
-            raise RuntimeError("Connection pool not initialized")
-
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO file_metadata (file_hash, file_name, knowledge_base_id)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (file_hash) DO UPDATE 
-                SET file_name = EXCLUDED.file_name, knowledge_base_id = EXCLUDED.knowledge_base_id
-            """, file_hash, file_name, knowledge_base_id)
-
-    async def delete_file_by_hash(self, file_hash: str, knowledge_base_id: str) -> int:
+    async def batch_check_chunk_duplicates(self, chunk_hashes: List[str], file_hash: str, knowledge_base_id: str, user_id: int) -> Set[str]:
         """
-        删除文件：同时删除 file_metadata 和 parent_chunks 中的记录
-        返回删除的 parent_chunks 数量
+        批量检查块哈希是否已被当前用户的其他文件使用过
+        注意：排除当前文件自身的块哈希
+        
+        Args:
+            chunk_hashes: 哈希值列表
+            file_hash: 当前文件的哈希值
+            knowledge_base_id: 知识库ID
+            user_id: 用户ID
+            
+        Returns:
+            已被其他文件使用过的哈希值集合
         """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
+        
+        if not chunk_hashes:
+            return set()
+        
+        try:
+            async with self.pool.acquire() as conn:
+                # 查找被同一用户同一知识库中其他文件使用过的块哈希
+                rows = await conn.fetch("""
+                    SELECT DISTINCT chunk_hash FROM chunk_hashes 
+                    WHERE chunk_hash = ANY($1::text[])
+                    AND file_hash != $2
+                    AND knowledge_base_id = $3
+                    AND user_id = $4
+                """, chunk_hashes, file_hash, knowledge_base_id, user_id)
+                
+                return {row['chunk_hash'] for row in rows}
+        except Exception as e:
+            logger.error(f"Error batch checking chunk duplicates: {e}")
+            raise
 
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                # 1. 删除 parent_chunks 中的记录（直接使用 file_hash 字段）
-                result = await conn.execute("""
-                    DELETE FROM parent_chunks
-                    WHERE knowledge_base_id = $1
-                    AND file_hash = $2
-                """, knowledge_base_id, file_hash)
-
-                deleted_count = int(
-                    result.split()[-1]) if result.startswith("DELETE ") else 0
-
-                # 2. 删除 file_metadata 中的记录
-                await conn.execute("""
-                    DELETE FROM file_metadata
-                    WHERE file_hash = $1 AND knowledge_base_id = $2
-                """, file_hash, knowledge_base_id)
-
-                logger.info(f"Deleted {deleted_count} parent documents for file_hash: {file_hash}")
-                return deleted_count
-
-    async def create_knowledge_base_for_user(self, user_id: int, knowledge_base_id: str):
-        """为用户创建知识库"""
+    async def batch_add_chunk_hashes(self, chunk_hashes: List[str], file_hash: str, knowledge_base_id: str, user_id: int):
+        """
+        批量添加块哈希，关联到指定文件
+        
+        Args:
+            chunk_hashes: 哈希值列表
+            file_hash: 文件哈希值
+            knowledge_base_id: 知识库ID
+            user_id: 用户ID
+        """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
-
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO user_knowledge_bases (user_id, knowledge_base_id)
-                VALUES ($1, $2)
-                ON CONFLICT (user_id, knowledge_base_id) DO NOTHING
-            """, user_id, knowledge_base_id)
-
-    async def close(self):
-        """关闭连接池"""
-        if self.pool:
-            await self.pool.close()
-            logger.info("PostgreSQL connection pool closed")
+        
+        if not chunk_hashes:
+            return
+        
+        try:
+            async with self.pool.acquire() as conn:
+                # 构建批量插入参数
+                values = [(chunk_hash, file_hash, knowledge_base_id, user_id) for chunk_hash in chunk_hashes]
+                await conn.executemany("""
+                    INSERT INTO chunk_hashes (chunk_hash, file_hash, knowledge_base_id, user_id)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (chunk_hash, file_hash, knowledge_base_id, user_id) DO NOTHING
+                """, values)
+                logger.info(f"批量添加 {len(chunk_hashes)} 个块哈希，关联文件 {file_hash[:16]}（用户 {user_id}）")
+        except Exception as e:
+            logger.error(f"Error batch adding chunk hashes: {e}")
+            raise
 
 
 _global_postgresql_client = None

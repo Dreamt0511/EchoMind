@@ -6,7 +6,6 @@ from langchain_core.documents import Document
 from langchain_community.embeddings import DashScopeEmbeddings
 from pymilvus import AsyncMilvusClient, DataType, Function, FunctionType
 from pymilvus import AnnSearchRequest, RRFRanker
-from hash_storage import HashStorage
 import logging
 logger = logging.getLogger(__name__)
 
@@ -18,12 +17,12 @@ class AsyncMilvusClientWrapper:
     _instance = None
     _singleton_initialized = False
     
-    def __new__(cls, hash_storage: Optional["HashStorage"] = None):
+    def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self, hash_storage: Optional["HashStorage"] = None):
+    def __init__(self):
         # 检查单例是否已初始化
         if self._singleton_initialized:
             return
@@ -34,11 +33,11 @@ class AsyncMilvusClientWrapper:
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY")
         )
         self.client = AsyncMilvusClient(
-            uri=os.getenv("Milvus_url"),
+            uri="https://in03-bf51824a0cbc1a5.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn:19530",
+            #uri=os.getenv("Milvus_url"),
             token=os.getenv("Token")
         )
         self.dense_dim = int(os.getenv("dense_dimension", "1024"))
-        self.hash_storage = hash_storage
         self._collection_initialized = False
         self._collection_lock = asyncio.Lock()
         
@@ -65,6 +64,15 @@ class AsyncMilvusClientWrapper:
         # 创建 Schema
         schema = self.client.create_schema(enable_dynamic_field=True)
 
+        schema.add_field(
+            field_name="user_id",
+            datatype=DataType.INT64
+        )
+        schema.add_field(
+            field_name="file_hash", 
+            datatype=DataType.VARCHAR,
+            max_length=64
+        )
         # 添加字段
         schema.add_field(
             field_name="id",
@@ -157,69 +165,60 @@ class AsyncMilvusClientWrapper:
 
         logger.info(f"集合 {self.collection_name} 创建成功")
 
-    async def add_chunks_batch(self, knowledge_base_id: str, chunks_with_ids: List[Tuple[str, Document]]):
-        """批量添加已切好的子块到 Milvus"""
-        # 移除 _ensure_initialized 调用，因为启动时已经初始化
+    async def add_chunks_batch(self, knowledge_base_id: str, chunks_with_ids: List[Tuple[str, Document]], user_id: int):
         if not chunks_with_ids:
             return
 
-        # 准备数据
+        # 一次遍历准备文本和基础数据（向量占位）
         texts = []
-        chunks_info = []
-
+        data = []
+        
         for chunk_id, chunk in chunks_with_ids:
             if "parent_id" not in chunk.metadata:
                 raise ValueError(f"子块缺少 parent_id 元数据")
-
-            chunk_index = chunk.metadata.get("chunk_index", 0)
+            
             texts.append(chunk.page_content)
-            chunks_info.append({
+            
+            # 提取元数据（过滤掉已单独存储的字段）
+            stored_metadata = {
+                k: v for k, v in chunk.metadata.items()
+                if k not in ["parent_id", "file_hash"]
+            }
+            
+            data.append({
                 "chunk_id": chunk_id,
                 "parent_id": chunk.metadata["parent_id"],
                 "knowledge_base_id": knowledge_base_id,
-                "chunk_index": chunk_index,
-                "chunk": chunk
-            })
-        
-        # 使用异步批量接口向量化文本
-        dense_vectors = await self.embeddings.aembed_documents(texts)
-
-        # 准备插入数据
-        data = []
-        for i, chunk_info in enumerate(chunks_info):
-            chunk = chunk_info["chunk"]
-
-            stored_metadata = {
-                k: v for k, v in chunk.metadata.items()
-                if k not in ["parent_id", "chunk_index"]
-            }
-
-            data.append({
-                "chunk_id": chunk_info["chunk_id"],
-                "parent_id": chunk_info["parent_id"],
-                "knowledge_base_id": chunk_info["knowledge_base_id"],
-                "chunk_index": chunk_info["chunk_index"],
                 "text": chunk.page_content,
                 "metadata": stored_metadata,
-                "dense_vector": dense_vectors[i]
+                "dense_vector": None,  # 占位
+                "user_id": user_id,
+                "file_hash": chunk.metadata.get("file_hash", "")
             })
-
-        # 异步批量插入
+        
+        # 批量向量化
+        dense_vectors = await self.embeddings.aembed_documents(texts)
+        
+        # 填充向量
+        for i in range(len(data)):
+            data[i]["dense_vector"] = dense_vectors[i]
+        
+        # 批量插入
         result = await self.client.insert(
             collection_name=self.collection_name,
             data=data
         )
-
+        
         logger.info(f"已添加 {len(data)} 个子块到 Milvus（知识库: {knowledge_base_id}）")
         return result
 
-    async def hybrid_retrieval(self, query: str, knowledge_base_id: str, top_k: int = 10):
+    async def hybrid_retrieval(self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 10):
         """混合检索，返回去重后的父块ID列表，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
         # 构建过滤表达式
         if knowledge_base_id == "默认知识库":
             filter_expr = None  # 不添加过滤条件，搜索全部知识库
         else:
-            filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'# 构建过滤表达式，限制在指定知识库内搜索
+            filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'  # 构建过滤表达式，限制在指定知识库内搜索
 
         # 生成稠密向量，带重试机制
         max_retries = 3
@@ -296,49 +295,42 @@ class AsyncMilvusClientWrapper:
 
         
 
-    async def delete_file_by_hash(self, knowledge_base_id: str, file_hash: str):
-        """根据文件哈希删除整个文件的所有子块"""
-        # 移除 _ensure_initialized 调用，因为启动时已经初始化
-
-        # 构造过滤条件
-        filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and metadata["file_hash"] == "{file_hash}"'
-
-        # 异步查询要删除的数据
-        results = await self.client.query(
-            collection_name=self.collection_name,
-            filter=filter_expr,
-            output_fields=["chunk_id", "metadata"]
-        )
-
-        if results:
-            # 收集所有子块哈希
-            chunk_hashes = []
-            for result in results:
-                metadata = result.get("metadata", {})
-                chunk_hash = metadata.get("child_chunk_hash")
-                if chunk_hash:
-                    chunk_hashes.append(chunk_hash)
-
-            # 异步删除数据
-            await self.client.delete(
+    async def delete_file_by_hash(self, knowledge_base_id: str, file_hash: str, user_id: int) -> int:
+        """删除指定文件的所有子块（只负责 Milvus 数据删除）"""
+        try:
+            # 构建删除表达式，包含 user_id 确保隔离
+            expr = f'knowledge_base_id == "{knowledge_base_id}" and file_hash == "{file_hash}" and user_id == {user_id}'
+            
+            # 执行删除
+            result = await self.client.delete(
                 collection_name=self.collection_name,
-                filter=filter_expr
+                expr=expr
             )
+            logger.info(f"从 Milvus 删除文件 {file_hash[:16]} 的子块，影响数量: {result.delete_count}")
+            return result.delete_count
+            
+        except Exception as e:
+            logger.error(f"从 Milvus 删除文件失败: {e}")
+            raise
 
-            # 批量删除块哈希
-            if chunk_hashes and self.hash_storage:
-                await self.hash_storage.remove_chunk_hashes_batch(chunk_hashes)
-                logger.info(f"已删除 {len(chunk_hashes)} 个块哈希记录")
-
-            # 从哈希存储中移除文件哈希
-            if self.hash_storage:
-                await self.hash_storage.remove_file_hash(file_hash)
-
-            logger.info(f"已删除文件哈希 {file_hash} 的 {len(results)} 个子块")
-            return len(results)
-        else:
-            logger.warning(f"未找到文件哈希 {file_hash} 的数据")
-            return 0
+    async def delete_knowledge_base(self, knowledge_base_id: str, user_id: int) -> int:
+        """删除知识库的所有子块"""
+        try:
+            # 构建删除表达式
+            expr = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            
+            # 执行删除
+            result = await self.client.delete(
+                collection_name=self.collection_name,
+                expr=expr
+            )
+            
+            logger.info(f"从 Milvus 删除知识库 {knowledge_base_id} 的所有子块，影响数量: {result.delete_count}")
+            return result.delete_count
+            
+        except Exception as e:
+            logger.error(f"从 Milvus 删除知识库失败: {e}")
+            raise
 
     async def close(self):
         """关闭客户端连接"""
@@ -349,11 +341,11 @@ class AsyncMilvusClientWrapper:
 
 _global_milvus_client = None
 
-async def get_milvus_client(hash_storage: Optional["HashStorage"] = None):
+async def get_milvus_client():
     """获取全局 Milvus 客户端实例"""
     global _global_milvus_client
     if _global_milvus_client is None:
-        _global_milvus_client = AsyncMilvusClientWrapper(hash_storage)
+        _global_milvus_client = AsyncMilvusClientWrapper()
         # 启动时立即初始化集合，而不是等到第一次请求
         await _global_milvus_client.ensure_collection()
     return _global_milvus_client

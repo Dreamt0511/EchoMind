@@ -67,7 +67,8 @@ class DocumentProcessor:
                            temp_file_path: Path,
                            filename: str,
                            file_hash: str,
-                           knowledge_base_id: str
+                           knowledge_base_id: str,
+                           user_id: int  # 新增 user_id 参数
                            ) -> List[Dict]:
         logger.info(f"{'='*20} 开始进行文本分块 {filename} {'='*20}")
 
@@ -116,7 +117,8 @@ class DocumentProcessor:
                 
                 child_chunks = self.child_splitter.split_documents([parent_chunk])
                 
-                for child_index, child_chunk in enumerate(child_chunks):
+                
+                for child_chunk in child_chunks:
                     child_hash = hashlib.sha256(
                         child_chunk.page_content.encode()
                     ).hexdigest()
@@ -124,11 +126,11 @@ class DocumentProcessor:
                     child_chunk.metadata.update({
                         "parent_id": parent_id,
                         "parent_index": parent_index,
-                        "chunk_index": child_index,
                         "file_name": filename,
                         "child_chunk_hash": child_hash,
                         "file_hash": file_hash,
-                        "knowledge_base_id": knowledge_base_id
+                        "knowledge_base_id": knowledge_base_id,
+                        "user_id": user_id  # 新增 user_id
                     })
                     
                     all_child_items.append((child_hash, child_chunk))
@@ -145,47 +147,52 @@ class DocumentProcessor:
             logger.warning(f"文件 {filename} 加载或分割后无内容")
             return
         
-        # 关键优化：批量检查所有哈希（一次调用，一次锁获取）
+        # 批量检查所有哈希（排除当前文件的已有块哈希）
         all_hashes = [child_hash for child_hash, _ in all_child_items]
-        existing_hashes = await self.hash_storage.batch_check_duplicates(all_hashes)
+        existing_hashes = await self.hash_storage.batch_check_duplicates(
+            all_hashes, file_hash, knowledge_base_id, user_id
+        )
         
-        # 过滤出新子块
+        # 过滤出新子块（未被其他文件使用过的）
         new_child_items = []
         new_hashes = []
         
         for child_hash, child_chunk in all_child_items:
             if child_hash in existing_hashes:
-                logger.debug(f"子块已存在，跳过: {child_hash[:16]}...")
+                logger.debug(f"子块已被其他文件使用，跳过: {child_hash[:16]}...")
                 continue
             
             child_chunk_id = str(uuid.uuid4())
             new_child_items.append((child_chunk_id, child_chunk))
             new_hashes.append(child_hash)
         
-        # 批量添加新哈希（一次调用，一次文件写入）
+        # 批量添加新哈希（关联当前文件）
         if new_hashes:
-            await self.hash_storage.batch_add_chunk_hashes(new_hashes)
-            logger.info(f"==========批量添加新哈希完成==========")
+            await self.hash_storage.batch_add_chunk_hashes(
+                new_hashes, file_hash, knowledge_base_id, user_id
+            )
+            logger.info(f"==========批量添加 {len(new_hashes)} 个新哈希==========")
         
-        # 批量插入milvus数据库 - 使用全局客户端
+        # 批量插入milvus数据库
         if new_child_items:
             milvus_client = await self._get_milvus_client()
             await milvus_client.add_chunks_batch(
                 knowledge_base_id=knowledge_base_id,
-                chunks_with_ids=new_child_items
+                chunks_with_ids=new_child_items,
+                user_id=user_id
             )
-            logger.info(f"==========批量插入新子块到milvus完成==========")
+            logger.info(f"==========批量插入 {len(new_child_items)} 个子块到milvus完成==========")
         
-        # 批量插入postgresql数据库 - 使用全局客户端
+        # 批量插入postgresql数据库
         postgresql_client = await get_postgresql_client()
-        await postgresql_client.add_parent_chunk_batch(parent_data_list)
-        logger.info(f"==========批量插入父块到postgresql完成==========")
-
+        await postgresql_client.add_parent_chunk_batch(parent_data_list, user_id)
+        logger.info(f"==========批量插入 {len(parent_data_list)} 个父块到postgresql完成==========")
         
-        logger.info(f"==========所有步骤完成处理==========")
+        # 添加文件元数据（包含文件哈希和块哈希的关联）
+        await self.hash_storage.add_file_hash(file_hash, filename, knowledge_base_id, user_id)
+        logger.info(f"==========添加文件元数据完成==========")
         
-        await self.hash_storage.add_file_hash(file_hash)
-        
+        # 清理临时文件
         tempProcessor = TempDocumentProcessor()
         await tempProcessor.delete_temp_file(temp_file_path)
         

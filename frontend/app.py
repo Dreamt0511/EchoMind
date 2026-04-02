@@ -117,7 +117,8 @@ def confirm_delete():
                 url = "http://localhost:8000/documents"
                 resp = requests.delete(url, params={
                     "file_hash": real_hash,
-                    "knowledge_base_id": kb
+                    "knowledge_base_id": kb,
+                    "user_id": 1
                 })
 
                 if resp.status_code == 200:
@@ -291,7 +292,7 @@ with st.sidebar:
                     url = "http://localhost:8000/document_upload"
                     files = {"file": (uploaded_file.name,
                                       uploaded_file, uploaded_file.type)}
-                    data = {"knowledge_base_id": kb_name}
+                    data = {"knowledge_base_id": kb_name,"user_id": 1}
                     resp = requests.post(url, files=files, data=data)
 
                     if resp.status_code == 200:
@@ -404,7 +405,7 @@ if st.session_state.is_streaming:
 
     try:
         url = "http://localhost:8000/chat_with_agent/stream"
-        params = {"query": last_user_msg, "knowledge_base_id": selected_kb}
+        params = {"query": last_user_msg, "knowledge_base_id": selected_kb,"user_id": 1}
 
         with requests.get(url, params=params, stream=True, timeout=120) as response:
             if response.status_code != 200:

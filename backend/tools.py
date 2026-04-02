@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 @tool("search_knowledge_base")
-async def search_knowledge_base(query: str, knowledge_base_id: str, top_k: int = 5) -> str:
+async def search_knowledge_base(query: str, knowledge_base_id: str, user_id: int, top_k: int = 5) -> str:
     """
     **功能**：从私有知识库检索相关文档、专业知识、业务规则和内部资料
     - **适用场景**：
@@ -32,6 +32,7 @@ async def search_knowledge_base(query: str, knowledge_base_id: str, top_k: int =
     - 通用常识、基础推理即可解答的问题
     - 基于已有记忆就能回答的个性化问题
     """
+    print(f"当前用户ID: {user_id}")
     writer = get_stream_writer()
     writer(f"🔍 正在检索知识库【{knowledge_base_id}】...")
     logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
@@ -39,15 +40,18 @@ async def search_knowledge_base(query: str, knowledge_base_id: str, top_k: int =
 
 
     # 使用全局 Milvus 客户端
-    from api import hash_storage  # 避免循环导入问题
-    milvus_client = await get_milvus_client(hash_storage)
-    parent_chunkId_list = await milvus_client.hybrid_retrieval(query, knowledge_base_id, top_k)
+    milvus_client = await get_milvus_client()
+    parent_chunkId_list = await milvus_client.hybrid_retrieval(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k,user_id=user_id)
 
     logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
 
     # 使用全局 PostgreSQL 客户端
     postgresql_client = await get_postgresql_client()
-    parent_documents = await postgresql_client.get_parents(parent_chunkId_list)
+    parent_documents = await postgresql_client.get_parents(
+        knowledge_base_id=knowledge_base_id,
+        parent_ids=parent_chunkId_list,
+        user_id=user_id,
+    )
 
     # 提取父块文本列表
     text_list = [doc.text for doc in parent_documents]

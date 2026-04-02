@@ -44,6 +44,7 @@ async def file_upload(
     request: Request,
     file: UploadFile = File(...),
     knowledge_base_id: str = File(...),
+    user_id: int = File(...),  # 新增 user_id 参数
     background_tasks: BackgroundTasks = None
 ):
     """上传文档并进行embedding,支持文件去重"""
@@ -124,8 +125,8 @@ async def file_upload(
                         pass
                 raise HTTPException(status_code=400, detail="客户端已断开连接")
 
-            #异步调用检查文件是否重复
-            if await hash_storage.is_file_duplicate(file_hash):
+            #异步调用检查文件是否重复（传入 user_id）
+            if await hash_storage.is_file_duplicate(file_hash, knowledge_base_id, user_id):
                 logger.info(f"文件已存在，跳过处理: {filename}")
                 if temp_file_path and temp_file_path.exists():
                     try:
@@ -149,14 +150,15 @@ async def file_upload(
             # DocumentProcessor 需要改为异步版本
             document_instance = DocumentProcessor(hash_storage)
 
-            # 将文档处理任务添加到后台（处理完成后会自动清理临时文件）
+            # 将文档处理任务添加到后台（处理完成后会自动清理临时文件，传入 user_id）
             #process_document 需要是异步函数
             background_tasks.add_task(
                 document_instance.process_document,
                 temp_file_path=temp_file_path,
                 filename=filename,
                 file_hash=file_hash,
-                knowledge_base_id=knowledge_base_id
+                knowledge_base_id=knowledge_base_id,
+                user_id=user_id  # 新增
             )
 
             # 立即返回
@@ -186,18 +188,28 @@ async def file_upload(
 
 
 @router.delete("/documents", response_model=DocumentDeleteResponse)
-async def delete_file(file_hash: str, knowledge_base_id: str):
+async def delete_file(file_hash: str, knowledge_base_id: str, user_id: int):  # 新增 user_id
     deleted_parent_count = 0
     deleted_child_count = 0
 
     try:
-        # 删除 PostgreSQL中的父块 - 使用全局客户端
+        # 删除 PostgreSQL中的父块 - 使用全局客户端（传入 user_id）
         postgresql_client = await get_postgresql_client()
-        deleted_parent_count = await postgresql_client.delete_file_by_hash(knowledge_base_id=knowledge_base_id, file_hash=file_hash)
+        deleted_parent_count = await postgresql_client.delete_file_by_hash(
+            knowledge_base_id=knowledge_base_id, 
+            file_hash=file_hash,
+            user_id=user_id  # 新增
+        )
 
-        # 删除 Milvus中的子块 - 使用全局客户端
-        milvus_client = await get_milvus_client(hash_storage)
-        deleted_child_count = await milvus_client.delete_file_by_hash(knowledge_base_id=knowledge_base_id, file_hash=file_hash)
+        # 删除 Milvus中的子块 - 使用全局客户端（传入 user_id）
+        milvus_client = await get_milvus_client()
+        deleted_child_count = await milvus_client.delete_file_by_hash(
+            knowledge_base_id=knowledge_base_id, 
+            file_hash=file_hash,
+            user_id=user_id  # 新增
+        )
+        
+        # 块哈希的删除由文件删除时自动触发（ON DELETE CASCADE），无需手动处理
         
     except Exception as e:
         logger.error(f"删除失败: {e}")
@@ -210,12 +222,16 @@ async def delete_file(file_hash: str, knowledge_base_id: str):
 
 
 @router.get("/chat_with_agent/stream")
-async def chat_with_agent(query: str, knowledge_base_id: str, top_k: int = 5):
+async def chat_with_agent(query: str, knowledge_base_id: str, user_id: int, top_k: int = 5):  # 新增 user_id
     print("当前知识库ID:", knowledge_base_id)
     """
     流式返回 agent 响应
     """
     return StreamingResponse(
-        stream_agent_response(knowledge_base_id=knowledge_base_id, user_message=query),
+        stream_agent_response(
+            user_message=query,
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id 
+        ),
         media_type="text/plain; charset=utf-8"
     )

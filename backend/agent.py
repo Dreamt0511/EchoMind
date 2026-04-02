@@ -36,10 +36,10 @@ agent = create_agent(
     system_prompt=config.SYSTEM_PROMPT
 )
 
-async def stream_agent_response(user_message: str, knowledge_base_id: str) -> AsyncGenerator[str, None]:
+async def stream_agent_response(user_message: str, knowledge_base_id: str,user_id: int) -> AsyncGenerator[str, None]:
     try:
         async for chunk in agent.astream(
-            {"messages": [{"role": "user", "content": user_message + f"（知识库ID: {knowledge_base_id}）"}]},
+            {"messages": [{"role": "user", "content": user_message + f"（知识库ID: {knowledge_base_id}, 用户ID: {user_id}）"}]},
             stream_mode=["messages", "custom"]
         ):
             stream_mode, chunk_data = chunk
@@ -79,7 +79,7 @@ async def main():
     logger.info(f"{"=" * 50}开始处理用户请求{"=" * 50}")
     
     # 执行异步流式响应
-    await stream_agent_response(user_message)
+    await stream_agent_response(user_message,knowledge_base_id="默认知识库")
     
     print("\n" + "=" * 50)
     logger.info("Agent 响应处理完成")

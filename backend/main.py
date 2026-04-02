@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from milvus_client import get_milvus_client
 from postgresql_client import get_postgresql_client
-from hash_storage import HashStorage
 import logging
 
 # 配置日志
@@ -17,7 +16,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 全局哈希存储实例
-hash_storage = HashStorage()
 
 
 @asynccontextmanager
@@ -29,13 +27,16 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     
     try:
-        # 初始化 Milvus 客户端
-        milvus_client = await get_milvus_client(hash_storage)
-        logger.info("✓ Milvus 客户端初始化完成")
-        
         # 初始化 PostgreSQL 客户端
         postgresql_client = await get_postgresql_client()
-        logger.info("✓ PostgreSQL 客户端初始化完成")
+        logger.info("【PostgreSQL】 客户端初始化完成")
+        
+        try:
+            # 初始化 Milvus 客户端
+            milvus_client = await get_milvus_client()
+            logger.info("【Milvus】 客户端初始化完成")
+        except Exception as e:
+            logger.error(f"Milvus 客户端初始化失败: {e}")
         
         logger.info("=" * 50)
         logger.info("所有连接初始化完成，应用已就绪")
