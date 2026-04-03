@@ -16,6 +16,7 @@ import uuid
 import hashlib
 import logging
 from postgresql_client import get_postgresql_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,24 +61,25 @@ class DocumentProcessor:
     async def _get_milvus_client(self):
         """延迟获取 Milvus 客户端"""
         if self._milvus_client is None:
-            self._milvus_client = await get_milvus_client(self.hash_storage)
+            self._milvus_client = await get_milvus_client()
         return self._milvus_client
 
-    async def process_document(self,
-                           temp_file_path: Path,
-                           filename: str,
-                           file_hash: str,
-                           knowledge_base_id: str,
-                           user_id: int  # 新增 user_id 参数
-                           ) -> List[Dict]:
+    async def process_document(
+        self,
+        temp_file_path: Path,
+        filename: str,
+        file_hash: str,
+        knowledge_base_id: str,
+        user_id: int,
+    ) -> List[Dict]:
         logger.info(f"{'='*20} 开始进行文本分块 {filename} {'='*20}")
 
         loader_mapping = {
             ".pdf": PyMuPDFLoader,
             ".doc": Docx2txtLoader,
-            ".docx": Docx2txtLoader
+            ".docx": Docx2txtLoader,
         }
-        
+
         loader_class = None
         file_lower = filename.lower()
         for ends, loader in loader_mapping.items():
@@ -90,118 +92,134 @@ class DocumentProcessor:
 
         loop = asyncio.get_event_loop()
         loader = loader_class(temp_file_path)
-        
+
         def process_all_sync():
             """在一个线程中完成所有同步操作"""
             documents = loader.load()
             if not documents:
                 return None, None
-            
+
             parent_chunks = self.parent_splitter.split_documents(documents)
             if not parent_chunks:
                 return None, None
-            
+
             parent_data_list = []
-            all_child_items = []  # (child_hash, child_chunk)
-            
+            all_child_items = []  
+
             for parent_index, parent_chunk in enumerate(parent_chunks):
                 parent_id = str(uuid.uuid4())
-                
-                parent_data_list.append({
-                    "parent_id": parent_id,
-                    "knowledge_base_id": knowledge_base_id,
-                    "text": parent_chunk.page_content,
-                    "file_name": filename,
-                    "file_hash": file_hash,
-                })
-                
+
+                parent_data_list.append(
+                    {
+                        "parent_id": parent_id,
+                        "knowledge_base_id": knowledge_base_id,
+                        "text": parent_chunk.page_content,
+                        "file_name": filename,
+                        "file_hash": file_hash,
+                    }
+                )
+
                 child_chunks = self.child_splitter.split_documents([parent_chunk])
-                
-                
+
                 for child_chunk in child_chunks:
                     child_hash = hashlib.sha256(
                         child_chunk.page_content.encode()
                     ).hexdigest()
-                    
-                    child_chunk.metadata.update({
-                        "parent_id": parent_id,
-                        "parent_index": parent_index,
-                        "file_name": filename,
-                        "child_chunk_hash": child_hash,
-                        "file_hash": file_hash,
-                        "knowledge_base_id": knowledge_base_id,
-                        "user_id": user_id  # 新增 user_id
-                    })
-                    
-                    all_child_items.append((child_hash, child_chunk))
-            
+
+                    child_chunk.metadata.update(
+                        {
+                            "parent_id": parent_id,
+                            "parent_index": parent_index,
+                            "file_name": filename,
+                            "child_chunk_hash": child_hash,
+                            "file_hash": file_hash,
+                            "knowledge_base_id": knowledge_base_id,
+                            "user_id": user_id,
+                        }
+                    )
+
+                    all_child_items.append(child_chunk)
+
             return parent_data_list, all_child_items
-        
+
         parent_data_list, all_child_items = await loop.run_in_executor(
             None, process_all_sync
         )
 
-        logger.info(f"==========文本分块完成: 文件={filename}, 父块数={len(parent_data_list)}, 子块数={len(all_child_items)}==========")
-        
+        logger.info(
+            f"==========文本分块完成: 文件={filename}, 父块数={len(parent_data_list)}, 子块数={len(all_child_items)}=========="
+        )
+
         if not parent_data_list:
             logger.warning(f"文件 {filename} 加载或分割后无内容")
             return
-        
-        # 批量检查所有哈希（排除当前文件的已有块哈希）
-        all_hashes = [child_hash for child_hash, _ in all_child_items]
+
+        # ========== 1. 先添加文件元数据（必须在所有外键引用之前） ==========
+        await self.hash_storage.add_file_hash(
+            file_hash, filename, knowledge_base_id, user_id
+        )
+        logger.info(f"==========添加文件元数据完成==========")
+
+        # ========== 2. 批量检查所有哈希（排除当前文件的已有块哈希） ==========
+        all_hashes = [
+            hashlib.sha256(chunk.page_content.encode()).hexdigest()
+            for chunk in all_child_items
+        ]
         existing_hashes = await self.hash_storage.batch_check_duplicates(
             all_hashes, file_hash, knowledge_base_id, user_id
         )
-        
-        # 过滤出新子块（未被其他文件使用过的）
+
+        # ========== 3. 过滤出新子块（未被其他文件使用过的） ==========
         new_child_items = []
         new_hashes = []
-        
-        for child_hash, child_chunk in all_child_items:
+
+        for child_chunk in all_child_items:
+            child_hash = hashlib.sha256(child_chunk.page_content.encode()).hexdigest()
             if child_hash in existing_hashes:
                 logger.debug(f"子块已被其他文件使用，跳过: {child_hash[:16]}...")
                 continue
-            
-            child_chunk_id = str(uuid.uuid4())
-            new_child_items.append((child_chunk_id, child_chunk))
+
+            new_child_items.append(child_chunk)
             new_hashes.append(child_hash)
-        
-        # 批量添加新哈希（关联当前文件）
+
+        # ========== 4. 批量添加新哈希（现在 file_metadata 已存在） ==========
         if new_hashes:
             await self.hash_storage.batch_add_chunk_hashes(
                 new_hashes, file_hash, knowledge_base_id, user_id
             )
             logger.info(f"==========批量添加 {len(new_hashes)} 个新哈希==========")
-        
-        # 批量插入milvus数据库
+
+        # ========== 5. 批量插入milvus数据库 ==========
         if new_child_items:
             milvus_client = await self._get_milvus_client()
             await milvus_client.add_chunks_batch(
                 knowledge_base_id=knowledge_base_id,
-                chunks_with_ids=new_child_items,
-                user_id=user_id
+                chunks=new_child_items,  # 直接传递chunk对象
+                user_id=user_id,
             )
-            logger.info(f"==========批量插入 {len(new_child_items)} 个子块到milvus完成==========")
-        
-        # 批量插入postgresql数据库
+            logger.info(
+                f"==========批量插入 {len(new_child_items)} 个子块到milvus完成=========="
+            )
+
+        # ========== 6. 批量插入postgresql数据库 ==========
         postgresql_client = await get_postgresql_client()
         await postgresql_client.add_parent_chunk_batch(parent_data_list, user_id)
-        logger.info(f"==========批量插入 {len(parent_data_list)} 个父块到postgresql完成==========")
-        
-        # 添加文件元数据（包含文件哈希和块哈希的关联）
-        await self.hash_storage.add_file_hash(file_hash, filename, knowledge_base_id, user_id)
-        logger.info(f"==========添加文件元数据完成==========")
-        
+        logger.info(
+            f"==========批量插入 {len(parent_data_list)} 个父块到postgresql完成=========="
+        )
+
         # 清理临时文件
         tempProcessor = TempDocumentProcessor()
         await tempProcessor.delete_temp_file(temp_file_path)
-        
-        return [{
-            "filename": filename,
-            "parent_chunks": len(parent_data_list),
-            "child_chunks": len(all_child_items),
-            "new_chunks": len(new_child_items)
-        }]
+
+        return [
+            {
+                "filename": filename,
+                "parent_chunks": len(parent_data_list),
+                "child_chunks": len(all_child_items),
+                "new_chunks": len(new_child_items),
+            }
+        ]
 
 
 async def rerank_documents(query: str, documents: list, top_n=5):
@@ -213,47 +231,40 @@ async def rerank_documents(query: str, documents: list, top_n=5):
     if len(documents) > max_input:
         logger.info(f"重排序输入文档数从 {len(documents)} 截取到 {max_input}")
         documents = documents[:max_input]
-    
-    rerank_model = os.getenv('RERANK_MODEL', 'qwen3-rerank')
-    api_key = os.getenv('DASHSCOPE_API_KEY')
+
+    rerank_model = os.getenv("RERANK_MODEL", "qwen3-rerank")
+    api_key = os.getenv("DASHSCOPE_API_KEY")
     if not api_key:
         logger.error("错误: 请先在环境变量中设置 DASHSCOPE_API_KEY")
         return None
 
     # 官方文档中的API地址和模型名称
-    url = os.getenv('RERANK_URL')
+    url = os.getenv("RERANK_URL")
 
     # 请求头
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     # 请求体
     payload = {
         "model": rerank_model,
-        "input": {
-            "query": query,
-            "documents": documents
-        },
-        "parameters": {
-            "top_n": top_n,
-            "return_documents": True
-        }
+        "input": {"query": query, "documents": documents},
+        "parameters": {"top_n": top_n, "return_documents": True},
     }
-    
+
     # 重试逻辑：最多3次，间隔1秒
     max_retries = 3
-    
+
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:  # 3秒超时
                 response = await client.post(url, headers=headers, json=payload)
-            
+
             if response.status_code == HTTPStatus.OK:
                 return response.json()
             else:
-                logger.error(f"API 请求失败 (尝试 {attempt + 1}/{max_retries}): {response.status_code}")
+                logger.error(
+                    f"API 请求失败 (尝试 {attempt + 1}/{max_retries}): {response.status_code}"
+                )
                 if attempt == max_retries - 1:
                     logger.error(f"重排序 API 最终失败，返回 None")
                     return None
@@ -261,7 +272,7 @@ async def rerank_documents(query: str, documents: list, top_n=5):
                     logger.warning(f"等待 1 秒后重试...")
                     await asyncio.sleep(1)
                     continue
-                    
+
         except httpx.TimeoutException as e:
             logger.error(f"重排序 API 超时 (尝试 {attempt + 1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
@@ -271,7 +282,7 @@ async def rerank_documents(query: str, documents: list, top_n=5):
                 logger.warning(f"等待 1 秒后重试...")
                 await asyncio.sleep(1)
                 continue
-                
+
         except Exception as e:
             logger.error(f"重排序请求发生异常 (尝试 {attempt + 1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
@@ -281,5 +292,5 @@ async def rerank_documents(query: str, documents: list, top_n=5):
                 logger.warning(f"等待 1 秒后重试...")
                 await asyncio.sleep(1)
                 continue
-    
+
     return None  # 返回 None 触发降级

@@ -14,33 +14,30 @@ logger = logging.getLogger(__name__)
 
 async def ensure_database_exists(dsn: str) -> None:
     """确保数据库存在，不存在则自动创建"""
-    # 移除可能的查询参数
-    clean_dsn = dsn.split('?')[0]
+    
+    # 直接使用参数，不依赖 DSN 解析
+    user = "dreamt"
+    password = "0511"
+    host = "localhost"
+    port = 5432
+    db_name = "echomind_db"
     
     try:
-        conn = await asyncpg.connect(clean_dsn)
+        conn = await asyncpg.connect(
+            user=user, password=password, host=host, port=port, database=db_name
+        )
         await conn.close()
-        logger.info(f"Database already exists")
-        return True
-    except asyncpg.InvalidCatalogNameError as e:
-        # 数据库不存在，创建它
-        db_name = str(e).split('"')[1]
-        # 连接到 postgres 数据库
-        default_dsn = clean_dsn.rsplit('/', 1)[0] + '/postgres'
-        
-        try:
-            conn = await asyncpg.connect(default_dsn)
-            # 使用引号包裹数据库名，避免 SQL 注入和大小写问题
-            await conn.execute(f'CREATE DATABASE "{db_name}"')
-            logger.info(f"Created database: {db_name}")
-            await conn.close()
-            return True
-        except Exception as create_error:
-            logger.error(f"Failed to create database: {create_error}")
-            raise
+        logger.info(f"Database '{db_name}' already exists")
     except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        raise
+        logger.error(f"Error occurred while checking database: {e}")
+        logger.info(f"Database '{db_name}' does not exist. Creating...")
+        
+        conn = await asyncpg.connect(
+            user=user, password=password, host=host, port=port, database="postgres"
+        )
+        await conn.execute(f'CREATE DATABASE "{db_name}"')
+        await conn.close()
+        logger.info(f"Created database: {db_name}")
 
 @dataclass
 class ParentDocument:
@@ -180,15 +177,15 @@ class PostgreSQLParentClient:
                             FOREIGN KEY (file_hash, knowledge_base_id, user_id) REFERENCES file_metadata(file_hash, knowledge_base_id, user_id) ON DELETE CASCADE
                         );
                     """)
-
+                    #为5个表创建6个索引，加速多表关联查询和过滤操作
                     await conn.execute("""
                         -- 索引优化
-                        CREATE INDEX IF NOT EXISTS idx_file_kb_user ON file_metadata(knowledge_base_id, user_id);
-                        CREATE INDEX IF NOT EXISTS idx_parent_kb_user ON parent_chunks(knowledge_base_id, user_id);
-                        CREATE INDEX IF NOT EXISTS idx_parent_file_hash ON parent_chunks(file_hash);
-                        CREATE INDEX IF NOT EXISTS idx_chunk_hash ON chunk_hashes(chunk_hash);
-                        CREATE INDEX IF NOT EXISTS idx_chunk_file_hash ON chunk_hashes(file_hash, knowledge_base_id, user_id);
-                        CREATE INDEX IF NOT EXISTS idx_kb_user ON knowledge_bases(user_id);
+                        CREATE INDEX IF NOT EXISTS idx_file_kb_user ON file_metadata(knowledge_base_id, user_id);-- 加速查询：查询某知识库下某用户的所有文件
+                        CREATE INDEX IF NOT EXISTS idx_parent_kb_user ON parent_chunks(knowledge_base_id, user_id);-- 加速查询：查询某用户在某知识库中的所有父块
+                        CREATE INDEX IF NOT EXISTS idx_parent_file_hash ON parent_chunks(file_hash);-- 加速查询：根据文件哈希查找所有父块
+                        CREATE INDEX IF NOT EXISTS idx_chunk_hash ON chunk_hashes(chunk_hash);-- 加速查询：快速查找特定哈希值的块（用于去重）
+                        CREATE INDEX IF NOT EXISTS idx_chunk_file_hash ON chunk_hashes(file_hash, knowledge_base_id, user_id);-- 复合索引：加速多条件查询，场景：查找某文件在特定知识库中的所有块哈希
+                        CREATE INDEX IF NOT EXISTS idx_kb_user ON knowledge_bases(user_id);-- 加速查询：查询某用户的所有知识库
                     """)
 
                 self._pool_initialized = True
@@ -205,7 +202,6 @@ class PostgreSQLParentClient:
             logger.info("PostgreSQL connection pool closed")
 
     # ============ 知识库管理 ============
-    
     async def create_knowledge_base(self, knowledge_base_id: str, user_id: int):
         """为用户创建知识库"""
         if not self.pool:
@@ -302,13 +298,30 @@ class PostgreSQLParentClient:
         
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO file_metadata (file_hash, file_name, knowledge_base_id, user_id)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (file_hash, knowledge_base_id, user_id) DO UPDATE 
-                    SET file_name = EXCLUDED.file_name
-                """, file_hash, file_name, knowledge_base_id, user_id)
-                logger.info(f"添加文件元数据: {file_hash[:16]}... 到知识库 {knowledge_base_id}（用户 {user_id}）")
+                async with conn.transaction():
+                    # 1. 先确保用户存在
+                    await conn.execute("""
+                        INSERT INTO users (user_id, username)
+                        VALUES ($1, $2)
+                        ON CONFLICT (user_id) DO NOTHING
+                    """, user_id, f"user_{user_id}")
+                    
+                    # 2. 再确保知识库存在
+                    await conn.execute("""
+                        INSERT INTO knowledge_bases (knowledge_base_id, user_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (knowledge_base_id, user_id) DO NOTHING
+                    """, knowledge_base_id, user_id)
+                    
+                    # 3. 最后添加文件元数据
+                    await conn.execute("""
+                        INSERT INTO file_metadata (file_hash, file_name, knowledge_base_id, user_id)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (file_hash, knowledge_base_id, user_id) DO UPDATE 
+                        SET file_name = EXCLUDED.file_name
+                    """, file_hash, file_name, knowledge_base_id, user_id)
+                    
+                    logger.info(f"添加文件元数据: {file_hash[:16]}... 到知识库 {knowledge_base_id}（用户 {user_id}）")
         except Exception as e:
             logger.error(f"Error adding file metadata: {e}")
             raise
@@ -401,7 +414,7 @@ class PostgreSQLParentClient:
             logger.error(f"Error batch adding parents: {e}")
             raise
     
-    async def get_parents(self, parent_ids: List[str], knowledge_base_id: str, user_id: int) -> List[Dict]:
+    async def get_parents(self, parent_ids: List[str], knowledge_base_id: str, user_id: int) -> List[str]:
         """批量获取父块"""
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
@@ -411,20 +424,32 @@ class PostgreSQLParentClient:
         
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT parent_id, knowledge_base_id, user_id, text, file_name, file_hash, created_at, updated_at
+                #默认知识库的情况下查询所有知识库的父块文本，其他知识库名就限制在知识库里查找
+                if knowledge_base_id == "默认知识库":
+                    rows = await conn.fetch("""
+                    SELECT text
+                    FROM parent_chunks
+                    WHERE parent_id = ANY($1::text[]) 
+                    AND user_id = $2
+                """, parent_ids, user_id)
+                else:
+                    rows = await conn.fetch("""
+                    SELECT text
                     FROM parent_chunks
                     WHERE parent_id = ANY($1::text[]) 
                     AND knowledge_base_id = $2 
                     AND user_id = $3
                 """, parent_ids, knowledge_base_id, user_id)
-                
-                return [dict(row) for row in rows]
+
+            # 提取所有文本内容
+            texts = [row["text"] for row in rows]
+            return texts
         except Exception as e:
             logger.error(f"Error getting parents: {e}")
             raise
 
-
+    
+    #文档块去重
     async def batch_check_chunk_duplicates(self, chunk_hashes: List[str], file_hash: str, knowledge_base_id: str, user_id: int) -> Set[str]:
         """
         批量检查块哈希是否已被当前用户的其他文件使用过

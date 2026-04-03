@@ -32,38 +32,41 @@ async def search_knowledge_base(query: str, knowledge_base_id: str, user_id: int
     - 通用常识、基础推理即可解答的问题
     - 基于已有记忆就能回答的个性化问题
     """
-    print(f"当前用户ID: {user_id}")
+    print(f"当前用户ID: {user_id}\n查询问题: {query}")
     writer = get_stream_writer()
     writer(f"🔍 正在检索知识库【{knowledge_base_id}】...")
-    logger.info(f"{'---'*20}开始混合检索hybrid_retrieval{'---'*20}")
+    logger.info(f"{'---'*20}开始混合检索hybrid_retrieval_knowledge_base{'---'*20}")
     start_time = time.time()
 
 
     # 使用全局 Milvus 客户端
     milvus_client = await get_milvus_client()
-    parent_chunkId_list = await milvus_client.hybrid_retrieval(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k,user_id=user_id)
-
+    parent_chunkId_list = await milvus_client.hybrid_retrieval_knowledge_base(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k,user_id=user_id)
+    
     logger.info(f"{'---'*20}开始从PostgreSQL获取父块get_parents，一共需要检索出{len(parent_chunkId_list)}个父块{'---'*20}")
+
+    if not parent_chunkId_list:
+        writer("⚠️ 未检索到相关文档，请尝试更换关键词或稍后再试。")
+        logger.info(f"{'---'*20}未检索到相关文档{'---'*20}")
+        return []
 
     # 使用全局 PostgreSQL 客户端
     postgresql_client = await get_postgresql_client()
+    #或取父块文本列表
     parent_documents = await postgresql_client.get_parents(
         knowledge_base_id=knowledge_base_id,
         parent_ids=parent_chunkId_list,
         user_id=user_id,
     )
 
-    # 提取父块文本列表
-    text_list = [doc.text for doc in parent_documents]
-
     # 重排序父块
     logger.info(f"{'---'*20}开始重排序父块rerank_documents{'---'*20}")
-    rerank_result = await rerank_documents(query, text_list, top_k)
+    rerank_result = await rerank_documents(query, parent_documents, top_k)
 
     related_documents = []
     if not rerank_result:
         # 重排序失败：返回字符串列表
-        related_documents = text_list[:top_k]
+        related_documents = parent_documents[:top_k]
     else:
         # 重排序成功：返回 RerankDocumentItem 对象列表
         for item in rerank_result['output']['results']:
@@ -73,6 +76,8 @@ async def search_knowledge_base(query: str, knowledge_base_id: str, user_id: int
             )
             related_documents.append(related_document)
         related_documents = related_documents[:top_k]
+        
+        print("重排序后的最相关文档的相关性得分：", related_documents[0].relevance_score if related_documents else "无相关文档")
 
     end_time = time.time()
     writer(f"✓ 检索完成，本次检索耗时{end_time - start_time:.2f}秒")

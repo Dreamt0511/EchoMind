@@ -1,8 +1,8 @@
-from documents_process import TempDocumentProcessor, DocumentProcessor, rerank_documents
+from documents_process import TempDocumentProcessor, DocumentProcessor
 from hash_storage import HashStorage
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Request
 from typing import List, Dict, Optional
-from schemas import DocumentUploadResponse, DocumentDeleteResponse, DocumentRetrievalResponse,RerankDocumentItem
+from schemas import DocumentUploadResponse, DocumentDeleteResponse, DocumentRetrievalResponse
 from postgresql_client import get_postgresql_client
 from milvus_client import get_milvus_client
 import logging

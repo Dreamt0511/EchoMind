@@ -31,3 +31,5 @@ data
 
 #忽略.clade文件夹
 .clade
+
+postgreSQL信息.md
