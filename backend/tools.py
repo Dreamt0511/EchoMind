@@ -1,4 +1,3 @@
-from langchain_core.tools import tool
 import asyncio
 from documents_process import rerank_documents
 from postgresql_client import get_postgresql_client
@@ -8,6 +7,9 @@ import logging
 import sys
 from langgraph.config import get_stream_writer
 import time
+from schemas import ContextSchema
+from langchain.tools import tool, ToolRuntime
+
 
 # 配置日志
 logging.basicConfig(
@@ -19,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 @tool("search_knowledge_base")
-async def search_knowledge_base(query: str, knowledge_base_id: str, user_id: int, top_k: int = 5) -> str:
+async def search_knowledge_base(query: str, # 只需要 query，其他从 runtime 获取
+                                runtime: ToolRuntime[ContextSchema]) -> str:
     """
     **功能**：从私有知识库检索相关文档、专业知识、业务规则和内部资料
     - **适用场景**：
@@ -31,7 +34,14 @@ async def search_knowledge_base(query: str, knowledge_base_id: str, user_id: int
     - 日常闲聊、问候等无需知识支撑的场景
     - 通用常识、基础推理即可解答的问题
     - 基于已有记忆就能回答的个性化问题
+    Args:
+        query: 搜索查询词
     """
+    # 从强类型 context 获取参数
+    user_id = runtime.context.user_id
+    knowledge_base_id = runtime.context.knowledge_base_id
+    top_k = runtime.context.top_k
+    
     print(f"当前用户ID: {user_id}\n查询问题: {query}")
     writer = get_stream_writer()
     writer(f"🔍 正在检索知识库【{knowledge_base_id}】...")
@@ -76,7 +86,7 @@ async def search_knowledge_base(query: str, knowledge_base_id: str, user_id: int
             )
             related_documents.append(related_document)
         related_documents = related_documents[:top_k]
-        
+
         print("重排序后的最相关文档的相关性得分：", related_documents[0].relevance_score if related_documents else "无相关文档")
 
     end_time = time.time()

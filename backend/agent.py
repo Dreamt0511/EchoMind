@@ -9,6 +9,7 @@ import config
 from typing import AsyncGenerator
 from tools import search_knowledge_base
 import json
+from schemas import ContextSchema
 from langchain.agents.middleware import ToolCallLimitMiddleware
 
 # 配置日志
@@ -20,6 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv(override=True)
+
 
 # 使用 OpenAI 兼容接口的方式更通用
 model = ChatOpenAI(
@@ -44,12 +46,15 @@ agent = create_agent(
     tools=[search_knowledge_base],
     model=model, 
     system_prompt=config.SYSTEM_PROMPT,
-    middleware=[search_knowledge_limit]
+    middleware=[search_knowledge_limit],
+    context_schema=ContextSchema,
 )
 
 
 async def stream_agent_response(
-    user_message: str, knowledge_base_id: str, user_id: int
+    user_message: str, 
+    knowledge_base_id: str,
+    user_id: int
 ) -> AsyncGenerator[str, None]:
     try:
         async for chunk in agent.astream(
@@ -58,11 +63,15 @@ async def stream_agent_response(
                     {
                         "role": "user",
                         "content": user_message
-                        + f"（知识库ID: {knowledge_base_id}, 用户ID: {user_id}）",
                     }
                 ]
             },
             stream_mode=["messages", "custom"],
+            context=ContextSchema(  # 传递强类型 context
+                user_id=user_id,
+                knowledge_base_id=knowledge_base_id,
+                top_k=5
+            )
         ):
             stream_mode, chunk_data = chunk
 

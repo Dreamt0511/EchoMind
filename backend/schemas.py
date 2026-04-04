@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, List, Dict,Union
+from dataclasses import dataclass
+
 
 class DocumentUploadResponse(BaseModel):
     "文件上传响应模型"
@@ -10,16 +12,23 @@ class DocumentUploadResponse(BaseModel):
     is_duplicate: bool
 
 
-
 class DocumentDeleteResponse(BaseModel):
+    "文件删除响应模型"
     message: str
     knowledge_base_id : str
 
 
 class RerankDocumentItem(BaseModel):
+    "文档重新排序项模型"
     text: str
     relevance_score: Optional[float] = None
 
-class DocumentRetrievalResponse(BaseModel):
-    parent_documents: List[Union[str, RerankDocumentItem]]
+
+#上下文模型
+@dataclass
+class ContextSchema:
+    """知识库检索上下文模型"""
+    user_id: int
+    knowledge_base_id: str
+    top_k: int = 5
 
