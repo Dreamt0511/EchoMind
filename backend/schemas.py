@@ -50,7 +50,6 @@ class DeleteKnowledgeBaseResponse(BaseModel):
     knowledge_base_id: str
     status: str
     message: str
-    files_deleted: int
     child_chunks_deleted : int
 
 class GetKnowledgeBaseResponse(BaseModel):

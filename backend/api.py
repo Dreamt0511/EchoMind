@@ -257,9 +257,6 @@ async def delete_knowledge_base(
                 detail=pg_result.get("message", "知识库不存在或无权删除")
             )
         
-        # 获取删除的文件数量
-        files_deleted = pg_result.get("files_deleted", 0)
-        
         # 2. PostgreSQL 删除成功，继续删除 Milvus 中的子块
         try:
             milvus_client = await get_milvus_client()
@@ -281,8 +278,7 @@ async def delete_knowledge_base(
         return DeleteKnowledgeBaseResponse(
             knowledge_base_id=knowledge_base_id,
             status="success",
-            message=f"知识库删除成功，共删除 {files_deleted} 个文件及 {child_chunks_deleted} 个子块",
-            files_deleted=files_deleted,
+            message=f"知识库删除成功",
             child_chunks_deleted=child_chunks_deleted
         )
         

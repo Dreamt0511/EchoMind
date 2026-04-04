@@ -293,8 +293,9 @@ class AsyncMilvusClientWrapper:
                 collection_name=self.collection_name,
                 filter=filter_condition
                 )
+            print(f"删除知识库的结果: {result}")
             # 注意：Milvus 的 delete 操作返回的 result 中包含 delete_count
-            deleted_count = result.delete_count if hasattr(result, 'delete_count') else 0
+            deleted_count = result["delete_count"] if hasattr(result, 'delete_count') else 0
             logger.info(f"从 Milvus 删除知识库 {knowledge_base_id}（用户 {user_id}）的所有文件子块")
             return deleted_count
         except Exception as e:
@@ -312,9 +313,8 @@ class AsyncMilvusClientWrapper:
                 collection_name=self.collection_name,
                 filter=filter
             )
-            logger.info(
-                f"从 Milvus 删除文件 {file_hash[:16]} 的子块，影响数量: {result.delete_count}")
-            deleted_count = result.delete_count if hasattr(result, 'delete_count') else 0
+            logger.info(f"从 Milvus 删除文件 {file_hash[:16]} 的子块，影响数量: {result['delete_count']}")
+            deleted_count = result["delete_count"] if hasattr(result, 'delete_count') else 0
             return deleted_count
 
         except Exception as e:
