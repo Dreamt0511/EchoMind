@@ -359,7 +359,7 @@ chat_container = st.container()
 # 渲染现有聊天历史
 with chat_container:
     if not st.session_state.chat_history:
-        st.info("👋 你好！我是 EchoMind AI 助手。选择默认知识库时，我将检索全部知识库内容为你提供回复。")
+        st.info("你好！我是 EchoMind AI 助手。选择默认知识库时，我将融合知识库检索与自身模型能力，进行综合发散回答；选择指定知识库时，则严格限定于该知识库内容作答，不引入外部或模型自身知识")
     else:
         for chat in st.session_state.chat_history:
             st.markdown(

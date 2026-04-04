@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 from tools import search_knowledge_base
 import json
 from schemas import ContextSchema
-from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.middleware import ToolCallLimitMiddleware,dynamic_prompt,ModelRequest
 
 # 配置日志
 logging.basicConfig(
@@ -32,21 +32,28 @@ model = ChatOpenAI(
     streaming=True,
 )
 
-# 配置工具调用次数
 
+"""=============中间件============="""
 # 单次提问最多调用2次search_knowledge_base工具
 search_knowledge_limit = ToolCallLimitMiddleware(
     tool_name="search_knowledge_base",
     run_limit=2,  # 最多调用两次
 )
 
+#动态系统系统提示词切换，根据知识库id切换系统提示词
+@dynamic_prompt
+def dynamic_prompt(request: ModelRequest) -> str:
+    knowledge_base_id = request.runtime.context.knowledge_base_id
+    if knowledge_base_id == "默认知识库":
+        return config.SYSTEM_PROMPT_DEFAULT
+    else:
+        return config.SYSTEM_PROMPT_SPECIFIC
 
 # 创建agent
 agent = create_agent(
     tools=[search_knowledge_base],
     model=model, 
-    system_prompt=config.SYSTEM_PROMPT,
-    middleware=[search_knowledge_limit],
+    middleware=[search_knowledge_limit,dynamic_prompt],
     context_schema=ContextSchema,
 )
 
@@ -66,7 +73,7 @@ async def stream_agent_response(
                     }
                 ]
             },
-            stream_mode=["messages", "custom"],
+            stream_mode=["messages", "custom"],#使用messages模式逐token输出实现打字效果，custom模式输出工具调用信息展示agent的思考过程
             context=ContextSchema(  # 传递强类型 context
                 user_id=user_id,
                 knowledge_base_id=knowledge_base_id,
