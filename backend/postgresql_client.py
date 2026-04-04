@@ -359,7 +359,6 @@ class PostgreSQLParentClient:
         """添加文件元数据"""
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
-        
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
@@ -390,7 +389,7 @@ class PostgreSQLParentClient:
             logger.error(f"Error adding file metadata: {e}")
             raise
 
-    async def delete_file(self, file_hash: str, knowledge_base_id: str, user_id: int) -> Dict[str, int]:
+    async def delete_file(self, file_hash: str, knowledge_base_id: str, user_id: int) -> Dict[str, any]:
         """
         删除单个文件（级联删除会自动处理 parent_chunks 和 chunk_hashes）
         返回删除的统计信息
@@ -401,6 +400,21 @@ class PostgreSQLParentClient:
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
+                    # 先检查文件是否存在且属于该用户
+                    exists = await conn.fetchval("""
+                        SELECT file_hash FROM file_metadata 
+                        WHERE file_hash = $1 AND knowledge_base_id = $2 AND user_id = $3
+                    """, file_hash, knowledge_base_id, user_id)
+                    
+                    if not exists:
+                        logger.warning(f"文件 {file_hash[:16]} 不存在或不属于用户 {user_id}")
+                        return {
+                            "success": False,
+                            "message": "文件不存在或无权删除",
+                            "files_deleted": 0,
+                            "parent_chunks_deleted": 0
+                        }
+                    
                     # 获取要删除的父块数量（用于统计）
                     parent_count = await conn.fetchval("""
                         SELECT COUNT(*) FROM parent_chunks 
@@ -418,15 +432,26 @@ class PostgreSQLParentClient:
                     logger.info(f"删除文件 {file_hash[:16]}（知识库 {knowledge_base_id}，用户 {user_id}），关联的 {parent_count} 个父块将被级联删除")
                     
                     return {
+                        "success": True,
+                        "message": "文件删除成功",
                         "files_deleted": deleted_file_count,
                         "parent_chunks_deleted": parent_count
                     }
+                    
         except Exception as e:
             logger.error(f"Error deleting file: {e}")
             raise
 
-    async def get_knowledge_base_files(self, knowledge_base_id: str, user_id: int) -> List[Dict]:
-        """获取知识库中的所有文件"""
+    async def get_knowledge_base_files(self, knowledge_base_id: str, user_id: int) -> Dict[str, any]:
+        """获取知识库中的所有文件
+        Returns:
+            Dict[str, any]: {
+                "success": bool,
+                "message": str,
+                "files": List[Dict],  # 每个文件包含 file_hash, file_name, uploaded_at
+                "count": int
+            }
+        """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
         
@@ -438,10 +463,27 @@ class PostgreSQLParentClient:
                     WHERE knowledge_base_id = $1 AND user_id = $2
                     ORDER BY uploaded_at DESC
                 """, knowledge_base_id, user_id)
-                return [dict(row) for row in rows]
+                
+                files = [dict(row) for row in rows]
+                count = len(files)
+                
+                logger.info(f"获取知识库 {knowledge_base_id} 的文件列表，共 {count} 个")
+                
+                return {
+                    "success": True,
+                    "message": f"成功获取 {count} 个文件",
+                    "files": files,
+                    "count": count
+                }
+                
         except Exception as e:
-            logger.error(f"Error getting knowledge base files: {e}")
-            raise
+            logger.error(f"获取知识库 {knowledge_base_id} 的文件列表失败: {e}")
+            return {
+                "success": False,
+                "message": str(e),
+                "files": [],
+                "count": 0
+            }
 
     # ============ 父块管理 ============
     async def add_parent_chunk_batch(self, parents_data: List[Dict[str, any]], user_id: int) -> int:
@@ -478,7 +520,7 @@ class PostgreSQLParentClient:
             raise
     
     async def get_parents(self, parent_ids: List[str], knowledge_base_id: str, user_id: int) -> List[str]:
-        """批量获取父块"""
+        """批量获取父块，混合检索出子块后用来检索父块文本"""
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
         

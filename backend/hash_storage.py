@@ -35,11 +35,6 @@ class HashStorage:
         client = await self._get_pg_client()
         await client.add_file_metadata(file_hash, file_name, knowledge_base_id, user_id)
     
-    async def delete_file(self, file_hash: str, knowledge_base_id: str, user_id: int):
-        """删除文件（级联删除会自动处理块哈希）"""
-        client = await self._get_pg_client()
-        return await client.delete_file(file_hash, knowledge_base_id, user_id)
-    
     # ============ 块哈希管理 ============
     
     async def batch_check_duplicates(self, chunk_hashes: List[str], file_hash: str, knowledge_base_id: str, user_id: int) -> Set[str]:

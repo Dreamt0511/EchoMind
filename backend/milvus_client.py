@@ -281,43 +281,44 @@ class AsyncMilvusClientWrapper:
                     parent_ids.add(parent_id)
             return list(parent_ids)
 
-    async def delete_file_by_hash(self, knowledge_base_id: str, file_hash: str, user_id: int) -> int:
+    async def delete_knowledge_file_chunks(self, knowledge_base_id: str, user_id: int) -> int:
+        """
+        删除知识库中的所有文件的所有子块
+        返回删除的子块数量
+        """
+        try:
+            # 根据 knowledge_base_id 和 user_id 删除所有子块
+            filter_condition = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            result = await self.client.delete(
+                collection_name=self.collection_name,
+                filter=filter_condition
+                )
+            # 注意：Milvus 的 delete 操作返回的 result 中包含 delete_count
+            deleted_count = result.delete_count if hasattr(result, 'delete_count') else 0
+            logger.info(f"从 Milvus 删除知识库 {knowledge_base_id}（用户 {user_id}）的所有文件子块")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"从 Milvus 删除知识库 {knowledge_base_id} 的所有文件子块失败: {e}")
+            raise
+
+    async def delete_flie_chunks(self, knowledge_base_id: str, file_hash: str, user_id: int) -> int:
         """删除指定文件的所有子块（只负责 Milvus 数据删除）"""
         try:
             # 构建删除表达式，包含 user_id 确保隔离
-            expr = f'knowledge_base_id == "{knowledge_base_id}" and file_hash == "{file_hash}" and user_id == {user_id}'
+            filter = f'knowledge_base_id == "{knowledge_base_id}" and file_hash == "{file_hash}" and user_id == {user_id}'
 
             # 执行删除
             result = await self.client.delete(
                 collection_name=self.collection_name,
-                expr=expr
+                filter=filter
             )
             logger.info(
                 f"从 Milvus 删除文件 {file_hash[:16]} 的子块，影响数量: {result.delete_count}")
-            return result.delete_count
+            deleted_count = result.delete_count if hasattr(result, 'delete_count') else 0
+            return deleted_count
 
         except Exception as e:
             logger.error(f"从 Milvus 删除文件失败: {e}")
-            raise
-
-    async def delete_knowledge_base(self, knowledge_base_id: str, user_id: int) -> int:
-        """删除知识库的所有子块"""
-        try:
-            # 构建删除表达式
-            expr = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
-
-            # 执行删除
-            result = await self.client.delete(
-                collection_name=self.collection_name,
-                expr=expr
-            )
-
-            logger.info(
-                f"从 Milvus 删除知识库 {knowledge_base_id} 的所有子块，影响数量: {result.delete_count}")
-            return result.delete_count
-
-        except Exception as e:
-            logger.error(f"从 Milvus 删除知识库失败: {e}")
             raise
 
     async def close(self):

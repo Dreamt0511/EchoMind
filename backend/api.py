@@ -25,6 +25,10 @@ from schemas import (
     DocumentUploadResponse,
     DocumentDeleteResponse,
     CreateKnowledgeBaseResponse,
+    DeleteKnowledgeBaseResponse,
+    GetKnowledgeBaseResponse,
+    GetKnowledgeBaseFilesResponse,
+    FileItem
 )
 
 
@@ -228,32 +232,68 @@ async def create_knowledge_base(
                 detail=result["message"]
             )
     
-    return {
-        "status": "success",
-        "message": result["message"],
-        "knowledge_base_id": result["knowledge_base_id"]
-    }
+    return CreateKnowledgeBaseResponse(
+        knowledge_base_id=knowledge_base_id,
+        status="success",
+        message=result["message"],
+    )
     
-@router.delete("/knowledge-bases/{knowledge_base_id}")
+@router.delete("/knowledge-bases/{knowledge_base_id}", response_model=DeleteKnowledgeBaseResponse)
 async def delete_knowledge_base(
     knowledge_base_id: str,
     user_id: int
 ):
-    """删除知识库"""
-    postgresql_client = await get_postgresql_client()
-    result = await postgresql_client.delete_knowledge_base(knowledge_base_id, user_id)
-    
-    if not result["success"]:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=result["message"]
+    """删除知识库（先删 PostgreSQL，成功后再删 Milvus）"""
+    try:
+        # 1. 删除 PostgreSQL 中的知识库
+        postgresql_client = await get_postgresql_client()
+        pg_result = await postgresql_client.delete_knowledge_base(knowledge_base_id, user_id)
+        
+        # 检查 PostgreSQL 删除是否成功
+        if not pg_result.get("success", False):
+            logger.error(f"PostgreSQL删除知识库失败: {pg_result.get('message', '未知错误')}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=pg_result.get("message", "知识库不存在或无权删除")
+            )
+        
+        # 获取删除的文件数量
+        files_deleted = pg_result.get("files_deleted", 0)
+        
+        # 2. PostgreSQL 删除成功，继续删除 Milvus 中的子块
+        try:
+            milvus_client = await get_milvus_client()
+            child_chunks_deleted = await milvus_client.delete_knowledge_file_chunks(
+                knowledge_base_id=knowledge_base_id,
+                user_id=user_id,
+            )
+            logger.info(f"Milvus 删除成功，删除了 {child_chunks_deleted} 个子块")
+        except Exception as e:
+            # Milvus 删除失败，但 PostgreSQL 已删除成功
+            logger.error(f"Milvus 删除失败（PostgreSQL 已删除知识库 {knowledge_base_id}）: {e}")
+            # 可以选择是否抛出异常，这里选择抛出异常让用户知道部分失败
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"PostgreSQL 删除成功，但 Milvus 删除失败: {str(e)}"
+            )
+        
+        # 3. 全部删除成功
+        return DeleteKnowledgeBaseResponse(
+            knowledge_base_id=knowledge_base_id,
+            status="success",
+            message=f"知识库删除成功，共删除 {files_deleted} 个文件及 {child_chunks_deleted} 个子块",
+            files_deleted=files_deleted,
+            child_chunks_deleted=child_chunks_deleted
         )
-    
-    return {
-        "status": "success",
-        "message": result["message"],
-        "files_deleted": result["files_deleted"]
-    }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除知识库失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"删除知识库失败: {str(e)}"
+        )
 
 @router.get("/knowledge-bases")
 async def get_user_knowledge_bases(
@@ -262,6 +302,7 @@ async def get_user_knowledge_bases(
     """获取用户的所有知识库"""
     postgresql_client = await get_postgresql_client()
     result = await postgresql_client.get_user_knowledge_bases(user_id)
+    print("查询用户知识库结果:", result)
     
     if not result["success"]:
         raise HTTPException(
@@ -269,47 +310,102 @@ async def get_user_knowledge_bases(
             detail=result["message"]
         )
     
-    return {
-        "status": "success",
-        "message": result["message"],
-        "knowledge_bases": result["knowledge_bases"],
-        "count": result["count"]
-    }
+    return GetKnowledgeBaseResponse(
+        status="success",
+        message=result["message"],
+        knowledge_bases=result["knowledge_bases"],
+        count=result["count"],
+    )
 
-@router.delete("/documents", response_model=DocumentDeleteResponse)
+@router.get("/knowledge-bases/{knowledge_base_id}/files", response_model=GetKnowledgeBaseFilesResponse)
+async def get_knowledge_base_files(
+    knowledge_base_id: str,
+    user_id: int
+):
+    """获取知识库中的所有文件"""
+    postgresql_client = await get_postgresql_client()
+    result = await postgresql_client.get_knowledge_base_files(knowledge_base_id, user_id)
+    
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=result["message"]
+        )
+    
+    return GetKnowledgeBaseFilesResponse(
+        status="success",
+        message=result["message"],
+        count=result["count"],
+        files=[
+            FileItem(
+                file_hash=file["file_hash"],
+                file_name=file["file_name"],
+                uploaded_at=file["uploaded_at"]
+            )
+            for file in result["files"]
+        ]
+    )
+
+@router.delete("/knowledge-bases/{knowledge_base_id}/documents/{file_hash}", response_model=DocumentDeleteResponse)
 async def delete_file(
     file_hash: str, knowledge_base_id: str, user_id: int
-):  # 新增 user_id
+):
+    """删除文件-通过文件哈希删除（先删 PostgreSQL，成功后再删 Milvus）"""
     deleted_parent_count = 0
     deleted_child_count = 0
-
+    
     try:
-        # 删除 PostgreSQL中的父块 - 使用全局客户端（传入 user_id）
+        # 1. 删除 PostgreSQL 中的父块
         postgresql_client = await get_postgresql_client()
-        deleted_parent_count = await postgresql_client.delete_file_by_hash(
+        pg_result = await postgresql_client.delete_file(
             knowledge_base_id=knowledge_base_id,
             file_hash=file_hash,
-            user_id=user_id,  # 新增
+            user_id=user_id,
         )
-
-        # 删除 Milvus中的子块 - 使用全局客户端（传入 user_id）
-        milvus_client = await get_milvus_client()
-        deleted_child_count = await milvus_client.delete_file_by_hash(
+        
+        # 检查 PostgreSQL 删除是否成功
+        if not pg_result.get("success", False):
+            # PostgreSQL 删除失败，直接返回错误
+            logger.error(f"PostgreSQL删除失败: {pg_result.get('message', '未知错误')}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"PostgreSQL删除失败: {pg_result.get('message', '未知错误')}"
+            )
+        
+        # 获取删除的父块数量（用于返回信息）
+        deleted_parent_count = pg_result.get("parent_chunks_deleted", 0)
+        
+        # 2. PostgreSQL 删除成功，继续删除 Milvus 中的子块
+        try:
+            milvus_client = await get_milvus_client()
+            deleted_child_count = await milvus_client.delete_flie_chunks(
+                knowledge_base_id=knowledge_base_id,
+                file_hash=file_hash,
+                user_id=user_id,
+            )
+            logger.info(f"Milvus 删除成功，删除了 {deleted_child_count} 个子块")
+        except Exception as e:
+            # Milvus 删除失败，但 PostgreSQL 已删除成功
+            # 记录错误但返回部分成功的信息
+            logger.error(f"Milvus 删除失败（PostgreSQL 已删除成功）: {e}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"PostgreSQL 删除成功，但 Milvus 删除失败: {str(e)}"
+            )
+        
+        # 3. 全部删除成功
+        return DocumentDeleteResponse(
+            message=f"成功删除 {deleted_parent_count} 个父块和 {deleted_child_count} 个子块",
             knowledge_base_id=knowledge_base_id,
-            file_hash=file_hash,
-            user_id=user_id,  # 新增
+            status="success",
+            parent_chunks_deleted=deleted_parent_count,
+            child_chunks_deleted=deleted_child_count
         )
-
-        # 块哈希的删除由文件删除时自动触发（ON DELETE CASCADE），无需手动处理
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"删除失败: {e}")
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
-
-    return DocumentDeleteResponse(
-        message=f"成功删除 {deleted_parent_count} 个父块和 {deleted_child_count} 个子块",
-        knowledge_base_id=knowledge_base_id,
-    )
 
 
 @router.get("/chat_with_agent/stream")
