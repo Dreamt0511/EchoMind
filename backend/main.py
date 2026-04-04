@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 全局哈希存储实例
+
 
 
 @asynccontextmanager
