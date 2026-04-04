@@ -23,6 +23,12 @@ class RerankDocumentItem(BaseModel):
     text: str
     relevance_score: Optional[float] = None
 
+class CreateKnowledgeBaseResponse(BaseModel):
+    "创建知识库响应模型"
+    knowledge_base_id: str
+    status: str
+    message: str
+
 
 #上下文模型
 @dataclass

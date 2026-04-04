@@ -202,24 +202,54 @@ class PostgreSQLParentClient:
             logger.info("PostgreSQL connection pool closed")
 
     # ============ 知识库管理 ============
-    async def create_knowledge_base(self, knowledge_base_id: str, user_id: int):
-        """为用户创建知识库"""
+    async def create_knowledge_base(self, knowledge_base_id: str, user_id: int) -> Dict[str, any]:
+        """为用户创建知识库
+        Returns:
+            Dict[str, any]: {
+                "success": bool,
+                "message": str,
+                "knowledge_base_id": str (可选)
+            }
+        """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
         
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO knowledge_bases (knowledge_base_id, user_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT (knowledge_base_id, user_id) DO NOTHING
-                """, knowledge_base_id, user_id)
-                logger.info(f"为用户 {user_id} 创建知识库: {knowledge_base_id}")
+                async with conn.transaction():
+                    # 先检查知识库是否已存在（可选，但保持风格一致）
+                    exists = await conn.fetchval("""
+                        SELECT knowledge_base_id FROM knowledge_bases 
+                        WHERE knowledge_base_id = $1 AND user_id = $2
+                    """, knowledge_base_id, user_id)
+                    
+                    if exists:
+                        logger.warning(f"知识库 {knowledge_base_id} 已存在（用户 {user_id}）")
+                        return {
+                            "success": False,
+                            "message": f"知识库 {knowledge_base_id} 已存在",
+                            "knowledge_base_id": knowledge_base_id
+                        }
+                    
+                    # 插入新知识库
+                    await conn.execute("""
+                        INSERT INTO knowledge_bases (knowledge_base_id, user_id)
+                        VALUES ($1, $2)
+                    """, knowledge_base_id, user_id)
+                    
+                    logger.info(f"为用户 {user_id} 创建知识库: {knowledge_base_id}")
+                    
+                    return {
+                        "success": True,
+                        "message": f"知识库 {knowledge_base_id} 创建成功",
+                        "knowledge_base_id": knowledge_base_id
+                    }
+                    
         except Exception as e:
-            logger.error(f"Error creating knowledge base: {e}")
+            logger.error(f"创建知识库 {knowledge_base_id} 失败: {e}")
             raise
     
-    async def delete_knowledge_base(self, knowledge_base_id: str, user_id: int) -> Dict[str, int]:
+    async def delete_knowledge_base(self, knowledge_base_id: str, user_id: int) -> Dict[str, any]:
         """
         删除整个知识库（级联删除会自动处理 file_metadata、parent_chunks、chunk_hashes）
         返回删除的统计信息
@@ -230,50 +260,84 @@ class PostgreSQLParentClient:
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
-                    # 获取要删除的文件数量（用于统计）
+                    # 先检查知识库是否存在且属于该用户
+                    exists = await conn.fetchval("""
+                        SELECT knowledge_base_id FROM knowledge_bases 
+                        WHERE knowledge_base_id = $1 AND user_id = $2
+                    """, knowledge_base_id, user_id)
+                    
+                    if not exists:
+                        logger.warning(f"知识库 {knowledge_base_id} 不存在或不属于用户 {user_id}")
+                        return {
+                            "success": False,
+                            "message": "知识库不存在或无权删除",
+                            "files_deleted": 0
+                        }
+                    
+                    # 获取要删除的文件数量（用于日志）
                     file_count = await conn.fetchval("""
                         SELECT COUNT(*) FROM file_metadata 
                         WHERE knowledge_base_id = $1 AND user_id = $2
                     """, knowledge_base_id, user_id)
                     
-                    # 删除知识库（由于外键级联，会自动删除所有关联的文件、父块、块哈希）
-                    result = await conn.execute("""
+                    # 删除知识库（由于外键级联，会自动删除所有关联数据）
+                    await conn.execute("""
                         DELETE FROM knowledge_bases 
                         WHERE knowledge_base_id = $1 AND user_id = $2
                     """, knowledge_base_id, user_id)
                     
-                    deleted_kb_count = int(result.split()[-1]) if result.startswith("DELETE ") else 0
-                    
-                    logger.info(f"删除知识库 {knowledge_base_id}（用户 {user_id}），关联的 {file_count} 个文件将被级联删除")
+                    logger.info(f"成功删除知识库 {knowledge_base_id}（用户 {user_id}），以及其中包含的{file_count} 个文件")
                     
                     return {
-                        "knowledge_bases_deleted": deleted_kb_count,
+                        "success": True,
+                        "message": f"知识库删除成功，共删除 {file_count} 个文件",
                         "files_deleted": file_count
                     }
+                    
         except Exception as e:
-            logger.error(f"Error deleting knowledge base {knowledge_base_id}: {e}")
+            logger.error(f"删除知识库 {knowledge_base_id} 失败: {e}")
             raise
     
-    async def get_user_knowledge_bases(self, user_id: int) -> List[str]:
-        """获取用户的所有知识库ID"""
+    async def get_user_knowledge_bases(self, user_id: int) -> Dict[str, any]:
+        """获取用户的所有知识库ID
+        Returns:
+            Dict[str, any]: {
+                "success": bool,
+                "message": str,
+                "knowledge_bases": List[str] (可选),
+                "count": int (可选)
+            }
+        """
         if not self.pool:
             raise RuntimeError("Connection pool not initialized")
         
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT knowledge_base_id 
-                    FROM knowledge_bases 
-                    WHERE user_id = $1
-                    ORDER BY created_at DESC
-                """, user_id)
-                return [row['knowledge_base_id'] for row in rows]
+                async with conn.transaction():
+                    rows = await conn.fetch("""
+                        SELECT knowledge_base_id 
+                        FROM knowledge_bases 
+                        WHERE user_id = $1
+                        ORDER BY created_at DESC
+                    """, user_id)
+                    
+                    knowledge_bases = [row['knowledge_base_id'] for row in rows]
+                    count = len(knowledge_bases)
+                    
+                    logger.info(f"获取用户 {user_id} 的知识库列表，共 {count} 个")
+                    
+                    return {
+                        "success": True,
+                        "message": f"成功获取 {count} 个知识库",
+                        "knowledge_bases": knowledge_bases,
+                        "count": count
+                    }
+                    
         except Exception as e:
-            logger.error(f"Error getting user knowledge bases: {e}")
+            logger.error(f"获取用户 {user_id} 的知识库列表失败: {e}")
             raise
 
     # ============ 文件哈希管理 ============
-    
     async def is_file_duplicate(self, file_hash: str, knowledge_base_id: str, user_id: int) -> bool:
         """检查文件哈希在指定用户的知识库中是否已存在"""
         if not self.pool:
@@ -380,7 +444,6 @@ class PostgreSQLParentClient:
             raise
 
     # ============ 父块管理 ============
-    
     async def add_parent_chunk_batch(self, parents_data: List[Dict[str, any]], user_id: int) -> int:
         """
         批量添加父块
