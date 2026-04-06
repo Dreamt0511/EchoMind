@@ -17,6 +17,11 @@ SuperMew-backend/
 
 # 忽略 backend 中的 .env 文件
 backend/.env
+backend/data
+backend/temp
+backend/提示词
+
+
 
 # 确保 backend、frontend、data 目录被跟踪（不忽略）
 !backend/
@@ -33,3 +38,8 @@ data
 .clade
 
 postgreSQL信息.md
+
+#skill 相关文件
+.agents
+skills-lock.json
+.claude

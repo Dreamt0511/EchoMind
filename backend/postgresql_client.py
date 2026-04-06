@@ -68,14 +68,14 @@ class PostgreSQLParentClient:
     _instance = None
     _singleton_initialized = False
 
-    def __new__(cls, dsn: Optional[str] = None, min_size: int = 5, max_size: int = 20,
+    def __new__(cls, dsn: Optional[str] = None, min_size: int = 10, max_size: int = 50,
                 auto_create_db: bool = True):
         """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, dsn: Optional[str] = None, min_size: int = 5, max_size: int = 20,
+    def __init__(self, dsn: Optional[str] = None, min_size: int = 10, max_size: int = 50,
                  auto_create_db: bool = True):
         """
         初始化 PostgreSQL 客户端
@@ -180,7 +180,7 @@ class PostgreSQLParentClient:
                     #为5个表创建6个索引，加速多表关联查询和过滤操作
                     await conn.execute("""
                         -- 索引优化
-                        CREATE INDEX IF NOT EXISTS idx_file_kb_user ON file_metadata(knowledge_base_id, user_id);-- 加速查询：查询某知识库下某用户的所有文件
+                        CREATE INDEX IF NOT EXISTS idx_file_kb_user_time ON file_metadata(knowledge_base_id, user_id, uploaded_at DESC);-- 加速查询：查询某知识库下某用户的所有文件,同时支持 WHERE 条件和 ORDER BY
                         CREATE INDEX IF NOT EXISTS idx_parent_kb_user ON parent_chunks(knowledge_base_id, user_id);-- 加速查询：查询某用户在某知识库中的所有父块
                         CREATE INDEX IF NOT EXISTS idx_parent_file_hash ON parent_chunks(file_hash);-- 加速查询：根据文件哈希查找所有父块
                         CREATE INDEX IF NOT EXISTS idx_chunk_hash ON chunk_hashes(chunk_hash);-- 加速查询：快速查找特定哈希值的块（用于去重）

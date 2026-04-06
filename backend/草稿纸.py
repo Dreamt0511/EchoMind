@@ -1,18 +1,11 @@
-import asyncpg
-import asyncio
+import redis
 
-async def test():
-    try:
-        conn = await asyncpg.connect(
-            user='dreamt',
-            password='0511',
-            database='postgres',
-            host='localhost',
-            port=5432
-        )
-        print("连接成功！")
-        await conn.close()
-    except Exception as e:
-        print(f"连接失败: {e}")
+# 连接方式完全一样
+redis_client = redis.Redis(
+    host='localhost',
+    port=6379,
+    decode_responses=True
+)
 
-asyncio.run(test())
+# 测试连接
+print(redis_client.ping())  # 输出: True

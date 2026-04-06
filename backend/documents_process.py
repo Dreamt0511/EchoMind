@@ -92,7 +92,8 @@ class DocumentProcessor:
 
         loop = asyncio.get_event_loop()
         loader = loader_class(temp_file_path)
-
+        
+        #父子块文档元数据增强
         def process_all_sync():
             """在一个线程中完成所有同步操作"""
             documents = loader.load()
@@ -182,31 +183,46 @@ class DocumentProcessor:
             new_child_items.append(child_chunk)
             new_hashes.append(child_hash)
 
-        # ========== 4. 批量添加新哈希（现在 file_metadata 已存在） ==========
+        # ========== 4-6. 并行执行独立的数据库操作 ==========
+        # 注意：批量添加新哈希依赖文件元数据（已存在），可以与 Milvus 和 PostgreSQL 并行
+        tasks = []
+        
+        # 任务1：批量添加新哈希（如果有）
         if new_hashes:
-            await self.hash_storage.batch_add_chunk_hashes(
-                new_hashes, file_hash, knowledge_base_id, user_id
+            tasks.append(
+                self.hash_storage.batch_add_chunk_hashes(
+                    new_hashes, file_hash, knowledge_base_id, user_id
+                )
             )
-            logger.info(f"==========批量添加 {len(new_hashes)} 个新哈希==========")
-
-        # ========== 5. 批量插入milvus数据库 ==========
+        
+        # 任务2：批量插入 Milvus 数据库（只插入新子块）
         if new_child_items:
             milvus_client = await self._get_milvus_client()
-            await milvus_client.add_chunks_batch(
-                knowledge_base_id=knowledge_base_id,
-                chunks=new_child_items,  # 直接传递chunk对象
-                user_id=user_id,
+            tasks.append(
+                milvus_client.add_chunks_batch(
+                    knowledge_base_id=knowledge_base_id,
+                    chunks=new_child_items,
+                    user_id=user_id,
+                )
             )
-            logger.info(
-                f"==========批量插入 {len(new_child_items)} 个子块到milvus完成=========="
-            )
-
-        # ========== 6. 批量插入postgresql数据库 ==========
+        
+        # 任务3：批量插入 PostgreSQL 数据库（父块）
         postgresql_client = await get_postgresql_client()
-        await postgresql_client.add_parent_chunk_batch(parent_data_list, user_id)
-        logger.info(
-            f"==========批量插入 {len(parent_data_list)} 个父块到postgresql完成=========="
+        tasks.append(
+            postgresql_client.add_parent_chunk_batch(parent_data_list, user_id)
         )
+        
+        # 并行执行所有数据库操作
+        if tasks:
+            await asyncio.gather(*tasks)
+        
+        if new_hashes:
+            logger.info(f"==========批量添加 {len(new_hashes)} 个新哈希==========")
+        
+        if new_child_items:
+            logger.info(f"==========批量插入 {len(new_child_items)} 个子块到milvus完成==========")
+        
+        logger.info(f"==========批量插入 {len(parent_data_list)} 个父块到postgresql完成==========")
 
         # 清理临时文件
         tempProcessor = TempDocumentProcessor()

@@ -1,3 +1,107 @@
+/* ========== 骨架屏CSS样式 ========== */
+/* 骨架屏动画 */
+@keyframes shimmer {
+    0% { background-position: -1000px 0; }
+    100% { background-position: 1000px 0; }
+}
+
+.skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 1000px 100%;
+    animation: shimmer 2s infinite linear;
+    border-radius: 4px;
+}
+
+.skeleton-text {
+    height: 16px;
+    margin: 8px 0;
+}
+
+.skeleton-title {
+    height: 24px;
+    width: 60%;
+    margin: 12px 0;
+}
+
+.skeleton-card {
+    height: 80px;
+    margin: 12px 0;
+    border-radius: 8px;
+}
+
+.skeleton-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+/* 加载指示器 */
+.loading-pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #667eea;
+    animation: pulse 1.4s infinite ease-in-out both;
+    margin: 0 2px;
+}
+
+.loading-pulse:nth-child(1) { animation-delay: -0.32s; }
+.loading-pulse:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes pulse {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1); }
+}
+
+/* 淡入动画 */
+.fade-in {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* 优化后的文件项样式 */
+.file-item-optimized {
+    padding: 6px 10px;
+    margin: 4px 0;
+    background: rgba(255,255,255,0.6);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.2s;
+}
+
+.file-item-optimized:hover {
+    background: rgba(255,255,255,0.9);
+    transform: translateX(4px);
+}
+
+/* 知识库骨架屏 */
+.kb-skeleton-item {
+    height: 60px;
+    margin: 8px 0;
+    background: linear-gradient(90deg, #f5f5f5 25%, #eeeeee 50%, #f5f5f5 75%);
+    background-size: 1000px 100%;
+    animation: shimmer 2s infinite linear;
+    border-radius: 8px;
+}
+
+/* 把 toast 提示从右上角移到左上角 */
+[data-testid="stToast"] {
+    position: fixed;
+    top: 20px !important;
+    left: 20px !important;
+    right: auto !important;
+    bottom: auto !important;
+    z-index: 999999 !important;
+}
 
 /* ========== 3D高级动态机器人图标样式 ========== */
 .main-header {
@@ -380,6 +484,7 @@
         margin-left: 0px;
     }
 }
+
 /* ----- 全局布局优化 ----- */
 .stApp {
     background: linear-gradient(135deg, #f0f2ff 0%, #e6f3ff 50%, #ffe6f0 100%);
@@ -571,8 +676,9 @@
     margin-bottom: 10px;
     text-align: center;
 }
+
 .assistant-message {
-flex-direction: row-reverse;
+    flex-direction: row-reverse;
 }
 
 .user-message {

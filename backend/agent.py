@@ -51,8 +51,8 @@ def dynamic_prompt(request: ModelRequest) -> str:
 
 # 创建agent
 agent = create_agent(
-    tools=[search_knowledge_base],
     model=model, 
+    tools=[search_knowledge_base],
     middleware=[search_knowledge_limit,dynamic_prompt],
     context_schema=ContextSchema,
 )
