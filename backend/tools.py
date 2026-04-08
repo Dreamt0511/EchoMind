@@ -90,9 +90,7 @@ async def search_knowledge_base(query: str, # 只需要 query，其他从 runtim
     logger.info(f"{'---'*20}检索完成{'---'*20}")
     return related_documents
 
-
-"""
-rerank_result的结构示例：
+"""rerank_result的结构示例：
 {'output': {'results': [{'document': {'text': '20 世纪80 年代末'}, 'index': 0, 
 'relevance_score': 0.886919463597282}]}, 'usage': {'total_tokens': 1224}, 
 'request_id': '2252323b-a3ba-4ef5-a203-e305b64249e1'}  

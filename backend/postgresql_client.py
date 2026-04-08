@@ -111,6 +111,9 @@ class PostgreSQLParentClient:
                 )
 
                 async with self.pool.acquire() as conn:
+                    #设置会话时区为北京时间
+                    await conn.execute("SET timezone = 'Asia/Shanghai'")
+
                     await conn.execute("""
                         -- 1. 用户表
                         CREATE TABLE IF NOT EXISTS users (
