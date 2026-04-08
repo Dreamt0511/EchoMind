@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Set
 from dotenv import load_dotenv
 import os
 import asyncio
+import uuid
 
 load_dotenv()
 
@@ -36,6 +37,17 @@ async def ensure_database_exists(dsn: str) -> None:
         await conn.execute(f'CREATE DATABASE "{db_name}"')
         await conn.close()
         logger.info(f"Created database: {db_name}")
+
+_global_postgresql_client = None
+
+async def get_postgresql_client():
+    """获取全局 PostgreSQL 客户端实例"""
+    global _global_postgresql_client
+    if _global_postgresql_client is None:
+        _global_postgresql_client = PostgreSQLParentClient()
+        await _global_postgresql_client.init_pool()
+    return _global_postgresql_client
+
 
 class PostgreSQLParentClient:
     """PostgreSQL 客户端，用于存储父块（单例模式）"""
@@ -151,6 +163,21 @@ class PostgreSQLParentClient:
                             PRIMARY KEY (chunk_hash, file_hash, knowledge_base_id, user_id),
                             FOREIGN KEY (file_hash, knowledge_base_id, user_id) REFERENCES file_metadata(file_hash, knowledge_base_id, user_id) ON DELETE CASCADE
                         );
+                        -- 6. 原始对话表（可以通过summary_id找出来）
+                        CREATE TABLE IF NOT EXISTS raw_conversations (
+                        id VARCHAR(50) PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        thread_id VARCHAR(50) NOT NULL,
+                        summary_id VARCHAR(50) NULL,
+                        role VARCHAR(10) NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    -- 独立创建索引，加速查询
+                    CREATE INDEX IF NOT EXISTS idx_user_created ON raw_conversations(user_id, created_at); -- 加速查询：查询某用户的所有对话
+                    CREATE INDEX IF NOT EXISTS idx_thread_created ON raw_conversations(thread_id, created_at); -- 加速查询：查询某会话的所有对话
+                    CREATE INDEX IF NOT EXISTS idx_summary_id ON raw_conversations(summary_id);    -- 加速查询：根据摘要ID查找所有对话
                     """)
                     #为5个表创建6个索引，加速多表关联查询和过滤操作
                     await conn.execute("""
@@ -596,55 +623,66 @@ class PostgreSQLParentClient:
             logger.error(f"Error batch adding chunk hashes: {e}")
             raise
 
+    async def add_conversation_message(self,user_id: int,thread_id: str,role: str, content: str) -> None:
+        """
+        添加对话消息
 
-_global_postgresql_client = None
-
-
-async def get_postgresql_client():
-    """获取全局 PostgreSQL 客户端实例"""
-    global _global_postgresql_client
-    if _global_postgresql_client is None:
-        _global_postgresql_client = PostgreSQLParentClient()
-        await _global_postgresql_client.init_pool()
-    return _global_postgresql_client
-
-
-async def main():
-    """查看数据库所有内容"""
-    client = await get_postgresql_client()
-
-    await client.init_pool()  # 确保连接池已初始化
-
-    async with client.pool.acquire() as conn:
-        records = await conn.fetch("""
-            SELECT 
-                parent_id,
-                knowledge_base_id,
-                text,
-                file_name,
-                file_hash,
-                created_at,
-                updated_at
-            FROM parent_chunks
-            ORDER BY created_at DESC
-        """)
-
-        print("=" * 80)
-        print(f"数据库内容（共 {len(records)} 条记录）:")
+        Args:
+            user_id: 用户ID
+            thread_id: 会话线程ID(目前不做会话隔离，默认使用用户ID)
+            role: 角色 ('human' 或 'ai')
+            content: 消息内容
+        """
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
         
-        for idx, record in enumerate(records, 1):
-            print(f"\n记录 {idx}:")
-            print(f"  parent_id: {record['parent_id']}")
-            print(f"  knowledge_base_id: {record['knowledge_base_id']}")
-            print(f"  text: {record['text'][:100]}..." if len(record['text']) > 100 else f"  text: {record['text']}")
-            print(f"  file_name: {record['file_name']}")
-            print(f"  file_hash: {record['file_hash']}")
-            print(f"  created_at: {record['created_at']}")
-            print(f"  updated_at: {record['updated_at']}")
-            print("-" * 80)
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO raw_conversations (id, user_id, thread_id, role, content)
+                    VALUES ($1, $2, $3, $4, $5)
+                """, str(uuid.uuid4()), user_id, thread_id, role, content)
+                                
+        except Exception as e:
+            logger.error(f"Error adding conversation message: {e}")
+            raise
 
-    await client.close()
+
+
+
+
+
+async def test_query_by_user(user_id: int):
+    """测试按 user_id 查询对话"""
+    
+    print(f"\n📋 查询 user_id={user_id} 的对话记录")
+    print("-" * 60)
+    
+    try:
+        pg_client = await get_postgresql_client()
+        
+        async with pg_client.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, summary_id, role, content, created_at
+                FROM raw_conversations
+                WHERE user_id = $1
+                ORDER BY created_at ASC
+                LIMIT 10
+            """, user_id)
+            
+            if not rows:
+                print(f"⚠️  未找到 user_id={user_id} 的对话记录")
+                return
+            
+            print(f"✅ 找到 {len(rows)} 条记录:\n")
+            for row in rows:
+                print(f"  [{row['created_at']}(summary_id):{row['summary_id']})] {row['role']}: {row['content'][:200]}")
+
+            
+    except Exception as e:
+        print(f"❌ 查询失败: {e}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # 运行测试
+    asyncio.run(test_query_by_user(1))

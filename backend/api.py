@@ -406,15 +406,14 @@ async def delete_file(
 
 @router.get("/chat_with_agent/stream")
 async def chat_with_agent(
-    query: str, knowledge_base_id: str, user_id: int, top_k: int = 5
+    query: str, knowledge_base_id: str, user_id: int, top_k: int = 5,background_tasks: BackgroundTasks = None,
 ):  # 新增 user_id
-    print("当前知识库ID:", knowledge_base_id)
     """
     流式返回 agent 响应
     """
     return StreamingResponse(
         stream_agent_response(
-            user_message=query, knowledge_base_id=knowledge_base_id, user_id=user_id
+            user_message=query, knowledge_base_id=knowledge_base_id, user_id=user_id, background_tasks=background_tasks
         ),
         media_type="text/plain; charset=utf-8",
     )

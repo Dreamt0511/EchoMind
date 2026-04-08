@@ -11,6 +11,8 @@ from tools import search_knowledge_base
 import json
 from schemas import ContextSchema
 from langchain.agents.middleware import ToolCallLimitMiddleware,dynamic_prompt,ModelRequest
+from fastapi import BackgroundTasks
+from postgresql_client import get_postgresql_client
 
 # 配置日志
 logging.basicConfig(
@@ -61,8 +63,10 @@ agent = create_agent(
 async def stream_agent_response(
     user_message: str, 
     knowledge_base_id: str,
-    user_id: int
+    user_id: int,
+    background_tasks: BackgroundTasks = None,
 ) -> AsyncGenerator[str, None]:
+    ai_message = ""
     try:
         async for chunk in agent.astream(
             {
@@ -91,6 +95,7 @@ async def stream_agent_response(
                     and hasattr(message_chunk, "content")
                     and message_chunk.content
                 ):
+                    ai_message += message_chunk.content#累加ai回复
                     yield json.dumps(
                         {"type": "answer", "content": message_chunk.content},
                         ensure_ascii=False,
@@ -104,28 +109,51 @@ async def stream_agent_response(
                     {"type": "status", "content": custom_info}, ensure_ascii=False
                 ) + "\n"
 
+        #流式响应结束或，添加后台任务保存对话
+        # 流式结束后，用 background_tasks 保存
+        if background_tasks:
+            background_tasks.add_task(
+                save_conversation_messages,
+                user_id=user_id,
+                thread_id=f"{user_id}",
+                user_message=user_message,
+                ai_message=ai_message
+            )
+
     except Exception as e:
         logger.error(f"错误: {e}")
         yield json.dumps(
             {"type": "error", "content": str(e)}, ensure_ascii=False
         ) + "\n"
 
-
-async def main():
-    """
-    主异步函数
-    """
-    user_message = "检索知识库，回答应该怎样对待马克思主义？"
-
-    logger.info(f"{"=" * 50}开始处理用户请求{"=" * 50}")
-
-    # 执行异步流式响应
-    await stream_agent_response(user_message, knowledge_base_id="默认知识库")
-
-    print("\n" + "=" * 50)
-    logger.info("Agent 响应处理完成")
-
-
-if __name__ == "__main__":
-    # 运行异步主函数
-    asyncio.run(main())
+# 保存对话到数据库
+async def save_conversation_messages(
+    user_id: int, 
+    thread_id: str, 
+    user_message: str, 
+    ai_message: str
+):
+    """后台任务：保存对话到数据库"""
+    try:
+        postgresql_client = await get_postgresql_client()
+        
+        # 保存用户消息
+        await postgresql_client.add_conversation_message(
+            user_id=user_id,
+            thread_id=thread_id,
+            role="human",
+            content=user_message
+        )
+        
+        # 保存 AI 回复
+        await postgresql_client.add_conversation_message(
+            user_id=user_id,
+            thread_id=thread_id,
+            role="ai",
+            content=ai_message
+        )
+        
+        logger.info(f"对话已保存: user_id={user_id}, thread_id={thread_id}")
+        
+    except Exception as e:
+        logger.error(f"保存对话失败: {e}")
