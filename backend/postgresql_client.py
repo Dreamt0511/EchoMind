@@ -1,8 +1,6 @@
 import asyncpg
 import logging
-from typing import List, Optional, Dict, Any, Set
-from dataclasses import dataclass, field
-from datetime import datetime
+from typing import List, Optional, Dict, Set
 from dotenv import load_dotenv
 import os
 import asyncio
@@ -38,29 +36,6 @@ async def ensure_database_exists(dsn: str) -> None:
         await conn.execute(f'CREATE DATABASE "{db_name}"')
         await conn.close()
         logger.info(f"Created database: {db_name}")
-
-@dataclass
-class ParentDocument:
-    """父文档数据类"""
-    parent_id: str
-    text: str
-    knowledge_base_id: Optional[str] = None
-    file_name: Optional[str] = None      # 新增
-    file_hash: Optional[str] = None      # 新增
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'parent_id': self.parent_id,
-            'knowledge_base_id': self.knowledge_base_id,
-            'text': self.text,
-            'file_name': self.file_name,
-            'file_hash': self.file_hash,
-            'created_at': self.created_at,
-            'updated_at': self.updated_at
-        }
-
 
 class PostgreSQLParentClient:
     """PostgreSQL 客户端，用于存储父块（单例模式）"""
