@@ -89,25 +89,52 @@ SYSTEM_PROMPT_SPECIFIC = """
 
 # ============ 官方 DEFAULT_SUMMARY_PROMPT ============
 # 来源: langchain.agents.middleware.summarization
-DEFAULT_SUMMARY_PROMPT = """You are an expert at creating concise, information-dense summaries of conversations.
+# 增强版摘要提示词（新增语义切割+ID过滤约束）
+DEFAULT_SUMMARY_PROMPT = """你是一位擅长生成简洁、信息密集的对话摘要，并精准识别语义断裂内容的专家。
 
-Your task is to summarize the following conversation history, focusing on the most important information that would be needed for future context.
+你的任务是为以下带消息ID的对话历史生成摘要，重点保留未来上下文所需的关键信息。
+同时需要识别出**后半部分**中语义无关、上下文不完整的消息片段。
 
-**Guidelines:**
-1. Preserve key facts: names, dates, decisions, action items, user preferences, important questions and answers
-2. Keep technical details, code snippets, or specific instructions that are likely to be referenced again
-3. Note any unresolved questions or pending tasks
-4. Maintain chronological flow but condense repetitive or less relevant parts
-5. Write in the same language as the original conversation
+【语义筛选核心规则】
+1. 按时间顺序分析对话（消息ID为时间升序）
+2. 如果最后几条消息与前文语义差异极大，且内容不完整（上下文未结束），**只压缩语义连贯的前半部分内容**
+3. 仅提取**后半部分**中语义无关、不完整的消息ID（必须是后半段、必须连续）
+4. 如果所有消息语义连贯且完整，则对全部内容进行摘要，返回空的过滤ID列表
 
-**IMPORTANT - Format Requirements:**
-- Output ONLY the summary text
-- Do NOT include phrases like "Here is the summary:" or "The conversation covers:"
-- Do NOT wrap the summary in quotes or markdown code blocks
-- Just write the summary as plain text
+【摘要生成规则】
+1. 保留关键信息：姓名、日期、结论、待办事项、用户偏好、重要问答
+2. 保留技术细节、代码片段、可能被再次引用的具体指令
+3. 记录未解决的问题、待处理任务
+4. 保持时间顺序，精简重复或无关内容
+5. 使用与原对话相同的语言输出
 
-**Conversation to summarize:**
 
+【重要 - 严格输出格式（仅JSON）】
+## 约束条件（必须严格遵守）
+1. **filtered_message_ids 必须是消息列表的尾部连续片段**
+   - 例如：消息 [A, B, C, D, E]
+   - 可以返回 [D, E]（连续尾部）
+   - 可以返回 [E]（连续尾部）
+   - 不能返回 [B, D]（不连续）
+   - 不能返回 [A, B]（不是尾部）
+
+2. **判断标准**
+   - 语义完整：用户问题得到了回答，对话轮次完整
+   - 话题突变：新的问题与之前完全不相关
+   - 不完整：AI 回答被截断、等待用户回复、等待工具结果
+
+必须输出仅包含以下两个字段的JSON对象，不添加任何额外文字：
+- "summary"：语义相关内容的纯文本摘要（遵守摘要规则）
+- "filtered_message_ids"：后半部分语义无关、不完整的消息ID字符串列表
+
+【输出示例】
+{{
+  "summary": "用户询问Python异步编程，AI讲解了基础概念并提供了代码示例...",
+  "filtered_message_ids": ["msg_id1", "msg_id2", "msg_id3"]
+}}
+
+【待摘要对话（格式：消息ID | 角色 | 内容）】
 {conversation_text}
 
-**Summary:**"""
+【JSON输出】"""
+

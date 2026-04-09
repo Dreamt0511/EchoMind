@@ -233,7 +233,12 @@ class PostgreSQLParentClient:
                             "message": f"知识库 {knowledge_base_id} 已存在",
                             "knowledge_base_id": knowledge_base_id
                         }
-                    
+                    # 1. 先确保用户存在
+                    await conn.execute("""
+                        INSERT INTO users (user_id, username)
+                        VALUES ($1, $2)
+                        ON CONFLICT (user_id) DO NOTHING
+                    """, user_id, f"user_{user_id}")
                     # 插入新知识库
                     await conn.execute("""
                         INSERT INTO knowledge_bases (knowledge_base_id, user_id)

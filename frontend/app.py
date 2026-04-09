@@ -1042,6 +1042,8 @@ with st.sidebar:
                                 success = upload_document_api_optimized(kb_name, uploaded_file)
                                 if success:
                                     st.success(f"文件 {uploaded_file.name} 上传中...")
+                                    # 刷新文件列表
+                                    st.rerun()
 
                 if not is_default:
                     st.button(
@@ -1114,7 +1116,7 @@ chat_container = st.container()
 with chat_container:
     if not st.session_state.chat_history:
         if st.session_state.knowledge_bases:
-            st.info("你好！我是 EchoMind AI 助手。选择默认知识库时，我将融合知识库检索与自身模型能力，进行综合发散回答；选择指定知识库时，则严格限定于该知识库内容作答，不引入外部或模型自身知识")
+            st.info("你好！我是 EchoMind AI 助手。选择默认知识库时：结合知识库发散回答；选择指定知识库时：仅按库内内容作答。")
     else:
         for chat in st.session_state.chat_history:
             st.markdown(render_message(chat["role"], chat["content"], chat["timestamp"]), unsafe_allow_html=True)

@@ -16,8 +16,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -26,17 +24,25 @@ async def lifespan(app: FastAPI):
     logger.info("应用启动，开始初始化连接...")
     logger.info("=" * 50)
     
+    # 初始化标志
+    milvus_initialized = False
+    postgresql_initialized = False
+    
     try:
-        # 初始化 PostgreSQL 客户端
-        postgresql_client = await get_postgresql_client()
+        # 初始化 PostgreSQL 客户端,保存到app.state
+        app.state.postgresql_client = await get_postgresql_client()
+        postgresql_initialized = True
         logger.info("【PostgreSQL】 客户端初始化完成")
         
+        # 初始化 Milvus 客户端,保存到app.state
         try:
-            # 初始化 Milvus 客户端
-            milvus_client = await get_milvus_client()
+            app.state.milvus_client = await get_milvus_client()
+            milvus_initialized = True
             logger.info("【Milvus】 客户端初始化完成")
         except Exception as e:
             logger.error(f"Milvus 客户端初始化失败: {e}")
+            # Milvus 初始化失败不影响应用启动，但记录错误
+            app.state.milvus_client = None
         
         logger.info("=" * 50)
         logger.info("所有连接初始化完成，应用已就绪")
@@ -55,15 +61,13 @@ async def lifespan(app: FastAPI):
     
     try:
         # 关闭 Milvus 连接
-        from milvus_client import AsyncMilvusClientWrapper
-        if AsyncMilvusClientWrapper._instance:
-            await AsyncMilvusClientWrapper._instance.close()
+        if milvus_initialized and hasattr(app.state, 'milvus_client') and app.state.milvus_client:
+            await app.state.milvus_client.close()
             logger.info("✓ Milvus 连接已关闭")
         
         # 关闭 PostgreSQL 连接
-        from postgresql_client import PostgreSQLParentClient
-        if PostgreSQLParentClient._instance:
-            await PostgreSQLParentClient._instance.close()
+        if postgresql_initialized and hasattr(app.state, 'postgresql_client') and app.state.postgresql_client:
+            await app.state.postgresql_client.close()
             logger.info("✓ PostgreSQL 连接已关闭")
             
     except Exception as e:
