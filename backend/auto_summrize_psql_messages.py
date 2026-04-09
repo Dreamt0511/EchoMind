@@ -12,7 +12,7 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.utils import count_tokens_approximately
-
+from langchain_core.messages import HumanMessage
 from postgresql_client import get_postgresql_client
 from config import DEFAULT_SUMMARY_PROMPT
 
@@ -54,84 +54,47 @@ async def compress_messages(
     logger.info(f"压缩完成: 生成摘要 ({len(summary)} 字符)")
 
     return f"Previous conversation summary:\n{summary}"
+   
 
 
-def format_conversation_from_db(messages: List[Dict[str, Any]]) -> str:
-    """
-    将数据库查询的消息列表格式化为对话文本
-    数据库中的每条消息已经有 role 字段，直接拼接成 "role: content" 格式
-    
-    Args:
-        messages: 数据库查询的消息列表，每条包含 role 和 content
-    
-    Returns:
-        格式化的对话文本
-    """
-    formatted = []
-    for msg in messages:
-        role = msg.get("role", "").lower()
-        content = msg.get("content", "")
-        formatted.append(f"{role}: {content}")
-    return "\n\n".join(formatted)
-
-
-def count_text_tokens(text: str) -> int:
-    """
-    估算文本的 token 数量
-    使用 LangChain 的 count_tokens_approximately，需要包装成消息列表
-    
-    Args:
-        text: 要计算 token 的文本
-    
-    Returns:
-        估算的 token 数量
-    """
-    if not text:
-        return 0
-    # count_tokens_approximately 需要传入消息列表
-    from langchain_core.messages import HumanMessage
-    return count_tokens_approximately([HumanMessage(content=text)])
-
-
-async def get_unsunmarized_conversations(user_id: int, thread_id: str = None) -> List[Dict[str, Any]]:
+async def get_unsunmarized_conversations(user_id: int, thread_id: str) -> List[Dict[str, Any]]:
     """获取指定用户和会话中未摘要的对话消息"""
-    pg_client = await get_postgresql_client()
     
-    if not pg_client.pool:
-        raise RuntimeError("数据库连接池未初始化")
-    
-    async with pg_client.pool.acquire() as conn:
-        if thread_id:
+    try:
+        pg_client = await get_postgresql_client()
+        
+        if not pg_client.pool:
+            logger.error("数据库连接池未初始化，无法获取未摘要消息")
+            return []
+        
+        async with pg_client.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT id, role, content, created_at, thread_id
                 FROM raw_conversations
                 WHERE user_id = $1 
                 AND thread_id = $2
-                AND summary_id IS NULL
+                AND (summary_id IS NULL OR summary_id = '')
                 ORDER BY created_at ASC
             """, user_id, thread_id)
-        else:
-            rows = await conn.fetch("""
-                SELECT id, role, content, created_at, thread_id
-                FROM raw_conversations
-                WHERE user_id = $1 
-                AND summary_id IS NULL
-                ORDER BY thread_id, created_at ASC
-            """, user_id)
-        
-        messages = [dict(row) for row in rows]
-        logger.info(f"获取到用户 {user_id} 的 {len(messages)} 条未摘要消息")
-        return messages
+            
+            messages = [dict(row) for row in rows]
+            logger.info(f"获取到用户 {user_id} 会话 {thread_id} 的 {len(messages)} 条未摘要消息")
+            return messages
+            
+    except Exception as e:
+        logger.error(f"获取未摘要消息失败 user_id={user_id}, thread_id={thread_id}: {e}")
+        return []
 
 
-async def update_messages_with_summary(message_ids: List[str], summary_id: str) -> bool:
-    """更新消息的 summary_id"""
-    pg_client = await get_postgresql_client()
-    
-    if not pg_client.pool:
-        raise RuntimeError("数据库连接池未初始化")
-    
+async def update_messages_with_summary_id(message_ids: List[str], summary_id: str) -> bool:
+    """更新消息的 summary_id（后台任务，不抛出异常）"""
     try:
+        pg_client = await get_postgresql_client()
+        
+        if not pg_client.pool:
+            logger.error("数据库连接池未初始化，无法更新 summary_id")
+            return False
+        
         async with pg_client.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("""
@@ -142,6 +105,7 @@ async def update_messages_with_summary(message_ids: List[str], summary_id: str) 
                 
                 logger.info(f"成功更新 {len(message_ids)} 条消息的 summary_id 为 {summary_id}")
                 return True
+                
     except Exception as e:
         logger.error(f"更新消息的 summary_id 失败: {e}")
         return False
@@ -153,21 +117,25 @@ async def compress_and_summarize_conversation(
     user_id: int,
     thread_id: str
 ) -> Dict[str, Any]:
-    """压缩单个会话的消息并生成摘要"""
+    """压缩单个会话的消息并生成摘要，更新数据库（psql中加上summary_id字段,摘要插入到milvus中）"""
     if not messages:
         return {"success": False, "reason": "没有消息需要压缩"}
     
     # 1. 格式化为对话文本
-    conversation_text = format_conversation_from_db(messages)
+    formatted = []
+    for msg in messages:
+        role = msg.get("role", "").lower()
+        content = msg.get("content", "")
+        formatted.append(f"{role}: {content}")
+    conversation_text = "\n\n".join(formatted)
     
-    # 2. 计算 token 数
-    total_tokens = count_text_tokens(conversation_text)
+    # 2. 计算 token 数,count_tokens_approximately 需要传入消息列表
+    total_tokens = count_tokens_approximately([HumanMessage(content=conversation_text)])
     
     logger.info(f"会话 {thread_id} 共 {len(messages)} 条消息，总 token 数: {total_tokens}")
     
     # 3. 检查是否超过阈值
     if total_tokens <= TOKEN_THRESHOLD:
-        logger.info(f"会话 {thread_id} token 数 ({total_tokens}) 未超过阈值 {TOKEN_THRESHOLD}，跳过压缩")
         return {
             "success": False,
             "reason": f"token 数未超过阈值 ({total_tokens} <= {TOKEN_THRESHOLD})",
@@ -184,7 +152,7 @@ async def compress_and_summarize_conversation(
         
         # 6. 更新数据库
         message_ids = [msg["id"] for msg in messages]
-        success = await update_messages_with_summary(message_ids, summary_id)
+        success = await update_messages_with_summary_id(message_ids, summary_id)
         
         if success:
             logger.info(f"成功压缩会话 {thread_id}，生成摘要 {summary_id}")
@@ -214,115 +182,100 @@ async def compress_and_summarize_conversation(
 
 async def process_all_users_conversations(
     model: BaseChatModel,
-    user_id: int = None,
-    thread_id: str = None
 ) -> Dict[str, Any]:
-    """处理所有用户的未摘要对话"""
-    pg_client = await get_postgresql_client()
+    """处理所有用户的未摘要对话（后台任务，不抛出异常）"""
     
-    if not pg_client.pool:
-        raise RuntimeError("数据库连接池未初始化")
-    
-    results = {
-        "total_conversations_processed": 0,
-        "compressed_count": 0,
-        "skipped_count": 0,
-        "failed_count": 0,
-        "details": []
-    }
-    
-    if user_id and thread_id:
-        # 处理指定用户的指定会话
-        messages = await get_unsunmarized_conversations(user_id, thread_id)
-        if messages:
-            result = await compress_and_summarize_conversation(
-                messages, model, user_id, thread_id
-            )
-            results["total_conversations_processed"] = 1
-            if result.get("success"):
-                results["compressed_count"] += 1
-            elif "未超过阈值" in result.get("reason", ""):
-                results["skipped_count"] += 1
-            else:
-                results["failed_count"] += 1
-            results["details"].append({
-                "user_id": user_id,
-                "thread_id": thread_id,
-                **result
-            })
-    
-    elif user_id:
-        # 处理指定用户的所有会话
-        async with pg_client.pool.acquire() as conn:
-            threads = await conn.fetch("""
-                SELECT DISTINCT thread_id 
-                FROM raw_conversations 
-                WHERE user_id = $1 
-                  AND (summary_id IS NULL OR summary_id = '')
-                ORDER BY thread_id
-            """, user_id)
+    try:
+        pg_client = await get_postgresql_client()
         
-        for thread in threads:
-            thread_id_val = thread["thread_id"]
-            messages = await get_unsunmarized_conversations(user_id, thread_id_val)
-            if messages:
-                result = await compress_and_summarize_conversation(
-                    messages, model, user_id, thread_id_val
-                )
-                results["total_conversations_processed"] += 1
-                if result.get("success"):
-                    results["compressed_count"] += 1
-                elif "未超过阈值" in result.get("reason", ""):
-                    results["skipped_count"] += 1
-                else:
-                    results["failed_count"] += 1
-                results["details"].append({
-                    "user_id": user_id,
-                    "thread_id": thread_id_val,
-                    **result
-                })
-    
-    else:
-        # 处理所有用户的所有未摘要会话
+        if not pg_client.pool:
+            logger.error("数据库连接池未初始化，无法执行压缩任务")
+            return {
+                "total_conversations_processed": 0,
+                "compressed_count": 0,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "error": "数据库连接池未初始化",
+                "details": []
+            }
+        
+        results = {
+            "total_conversations_processed": 0,
+            "compressed_count": 0,
+            "skipped_count": 0,
+            "failed_count": 0,
+            "details": []
+        }
+        
+        # 获取所有未摘要的会话
         async with pg_client.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT DISTINCT user_id, thread_id
                 FROM raw_conversations
-                WHERE summary_id IS NULL OR summary_id = ''
+                WHERE summary_id IS NULL
                 ORDER BY user_id, thread_id
             """)
         
+        # 处理每个会话，也要捕获单个会话的异常
         for row in rows:
-            uid = row["user_id"]
-            tid = row["thread_id"]
-            messages = await get_unsunmarized_conversations(uid, tid)
-            if messages:
-                result = await compress_and_summarize_conversation(
-                    messages, model, uid, tid
-                )
-                results["total_conversations_processed"] += 1
-                if result.get("success"):
-                    results["compressed_count"] += 1
-                elif "未超过阈值" in result.get("reason", ""):
-                    results["skipped_count"] += 1
-                else:
-                    results["failed_count"] += 1
+            user_id = row["user_id"]
+            thread_id = row["thread_id"]
+            
+            try:
+                # 获取未摘要的会话消息
+                messages = await get_unsunmarized_conversations(user_id, thread_id)
+                if messages:
+                    # 压缩会话消息
+                    result = await compress_and_summarize_conversation(
+                        messages, model, user_id, thread_id
+                    )
+                    results["total_conversations_processed"] += 1
+                    
+                    if result.get("success"):
+                        results["compressed_count"] += 1
+                    elif "未超过阈值" in result.get("reason", ""):
+                        results["skipped_count"] += 1
+                    else:
+                        results["failed_count"] += 1
+                    
+                    results["details"].append({
+                        "user_id": user_id,
+                        "thread_id": thread_id,
+                        **result
+                    })
+            except Exception as e:
+                # 单个会话处理失败，记录错误但继续处理其他会话
+                logger.error(f"处理会话失败 user_id={user_id}, thread_id={thread_id}: {e}", exc_info=True)
+                results["failed_count"] += 1
                 results["details"].append({
-                    "user_id": uid,
-                    "thread_id": tid,
-                    **result
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "success": False,
+                    "reason": f"处理异常: {str(e)}"
                 })
-    
-    # 输出汇总信息
-    logger.info("=" * 60)
-    logger.info("压缩任务完成汇总:")
-    logger.info(f"  处理会话数: {results['total_conversations_processed']}")
-    logger.info(f"  成功压缩数: {results['compressed_count']}")
-    logger.info(f"  跳过（未超阈值）: {results['skipped_count']}")
-    logger.info(f"  失败数: {results['failed_count']}")
-    logger.info("=" * 60)
-    
-    return results
+        
+        # 输出汇总信息
+        logger.info("=" * 60)
+        logger.info("压缩任务完成汇总:")
+        logger.info(f"  处理会话数: {results['total_conversations_processed']}")
+        logger.info(f"  成功压缩数: {results['compressed_count']}")
+        logger.info(f"  跳过（未超阈值）: {results['skipped_count']}")
+        logger.info(f"  失败数: {results['failed_count']}")
+        logger.info("=" * 60)
+        
+        return results
+        
+    except Exception as e:
+        # 捕获整个任务的致命错误
+        logger.error(f"压缩任务执行失败: {e}", exc_info=True)
+        return {
+            "total_conversations_processed": 0,
+            "compressed_count": 0,
+            "skipped_count": 0,
+            "failed_count": 0,
+            "error": str(e),
+            "details": []
+        }
 
 
 async def run_compression_task(model: BaseChatModel, user_id: int = None):
@@ -344,7 +297,7 @@ async def run_compression_task(model: BaseChatModel, user_id: int = None):
         return results
     except Exception as e:
         logger.error(f"压缩任务执行失败: {e}")
-        raise
+        return
 
 
 # ============ 使用示例 ============
