@@ -107,26 +107,24 @@ class PostgreSQLParentClient:
                     self.dsn,
                     min_size=self.min_size,
                     max_size=self.max_size,
-                    command_timeout=60
+                    command_timeout=60,
+                    server_settings={"timezone": "Asia/Shanghai"}#设置会话时区为北京时间
                 )
 
                 async with self.pool.acquire() as conn:
-                    #设置会话时区为北京时间
-                    await conn.execute("SET timezone = 'Asia/Shanghai'")
-
                     await conn.execute("""
                         -- 1. 用户表
                         CREATE TABLE IF NOT EXISTS users (
                             user_id SERIAL PRIMARY KEY,
                             username VARCHAR(50) UNIQUE NOT NULL,
-                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         );
 
                         -- 2. 知识库表（关联用户，支持级联删除）
                         CREATE TABLE IF NOT EXISTS knowledge_bases (
                             knowledge_base_id VARCHAR(128) NOT NULL,
                             user_id INTEGER NOT NULL,
-                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             PRIMARY KEY (knowledge_base_id, user_id),
                             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                         );
@@ -137,7 +135,7 @@ class PostgreSQLParentClient:
                             file_name VARCHAR(255) NOT NULL,
                             knowledge_base_id VARCHAR(128) NOT NULL,
                             user_id INTEGER NOT NULL,
-                            uploaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             PRIMARY KEY (file_hash, knowledge_base_id, user_id),
                             FOREIGN KEY (knowledge_base_id, user_id) REFERENCES knowledge_bases(knowledge_base_id, user_id) ON DELETE CASCADE
                         );               
@@ -150,8 +148,8 @@ class PostgreSQLParentClient:
                             text TEXT NOT NULL,
                             file_name VARCHAR(255) NOT NULL,
                             file_hash VARCHAR(64) NOT NULL,
-                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             PRIMARY KEY (parent_id, knowledge_base_id, user_id),
                             FOREIGN KEY (file_hash, knowledge_base_id, user_id) REFERENCES file_metadata(file_hash, knowledge_base_id, user_id) ON DELETE CASCADE
                         );
@@ -162,7 +160,7 @@ class PostgreSQLParentClient:
                             file_hash VARCHAR(64) NOT NULL,
                             knowledge_base_id VARCHAR(128) NOT NULL,
                             user_id INTEGER NOT NULL,
-                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             PRIMARY KEY (chunk_hash, file_hash, knowledge_base_id, user_id),
                             FOREIGN KEY (file_hash, knowledge_base_id, user_id) REFERENCES file_metadata(file_hash, knowledge_base_id, user_id) ON DELETE CASCADE
                         );
@@ -174,7 +172,7 @@ class PostgreSQLParentClient:
                         summary_id VARCHAR(50) NULL,
                         role VARCHAR(10) NOT NULL,
                         content TEXT NOT NULL,
-                        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
 
                     -- 独立创建索引，加速查询
@@ -670,7 +668,7 @@ async def test_query_by_user(user_id: int):
                 FROM raw_conversations
                 WHERE user_id = $1
                 ORDER BY created_at ASC
-                LIMIT 10
+                LIMIT 100
             """, user_id)
             
             if not rows:

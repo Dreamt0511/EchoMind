@@ -106,8 +106,8 @@ async def get_unsunmarized_conversations(user_id: int, thread_id: str = None) ->
                 SELECT id, role, content, created_at, thread_id
                 FROM raw_conversations
                 WHERE user_id = $1 
-                  AND thread_id = $2
-                  AND (summary_id IS NULL OR summary_id = '')
+                AND thread_id = $2
+                AND summary_id IS NULL
                 ORDER BY created_at ASC
             """, user_id, thread_id)
         else:
@@ -115,7 +115,7 @@ async def get_unsunmarized_conversations(user_id: int, thread_id: str = None) ->
                 SELECT id, role, content, created_at, thread_id
                 FROM raw_conversations
                 WHERE user_id = $1 
-                  AND (summary_id IS NULL OR summary_id = '')
+                AND summary_id IS NULL
                 ORDER BY thread_id, created_at ASC
             """, user_id)
         
