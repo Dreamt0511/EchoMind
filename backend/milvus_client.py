@@ -7,10 +7,25 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from pymilvus import AsyncMilvusClient, DataType, Function, FunctionType
 from pymilvus import AnnSearchRequest, RRFRanker
 import logging
+import time
+
+
 logger = logging.getLogger(__name__)
 
 # 加载环境变量
 load_dotenv()
+
+_global_milvus_client = None
+
+
+async def get_milvus_client():
+    """获取全局 Milvus 客户端实例"""
+    global _global_milvus_client
+    if _global_milvus_client is None:
+        _global_milvus_client = AsyncMilvusClientWrapper()
+        # 启动时立即初始化集合，而不是等到第一次请求
+        await _global_milvus_client.ensure_collection()
+    return _global_milvus_client
 
 
 class AsyncMilvusClientWrapper:
@@ -27,13 +42,15 @@ class AsyncMilvusClientWrapper:
         if self._singleton_initialized:
             return
 
-        self.collection_name = os.getenv("collection_name")
+        self.knowledge_base_collection = os.getenv("knowledge_base_collection")
+        self.memory_collection = os.getenv("memory_collection")
+
         self.embeddings = DashScopeEmbeddings(
             model=os.getenv("EMBEDDING_MODEL"),
-            dashscope_api_key=os.getenv("DASHSCOPE_API_KEY")
+            dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
         )
         self.client = AsyncMilvusClient(
-            #uri=os.getenv("Milvus_url"),
+            # uri=os.getenv("Milvus_url"),
             uri="https://in03-bf51824a0cbc1a5.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn",
             token="83929fadec379ce1d9acd2d3b1707f515fc2677410f020b564e4b6d2c4157c5311c12a77e10a3485b147f127c21e4dab19926475",
         )
@@ -51,69 +68,218 @@ class AsyncMilvusClientWrapper:
         async with self._collection_lock:
             if self._collection_initialized:
                 return
-            await self._init_collection()
+            await self._init_konwledge_base_collection()
+            await self._init_memory_collection()
             self._collection_initialized = True
 
-    async def _init_collection(self):
+    async def _init_memory_collection(self):
+        """初始化对话记忆集合（独立于知识库）"""
+        collection_name = self.memory_collection
+
+        if await self.client.has_collection(collection_name):
+            logger.info(f"对话记忆集合 {collection_name} 已存在")
+            # 加载集合
+            await self.client.load_collection(collection_name)
+            return
+
+        # 创建 Schema（专为对话记忆设计）
+        schema = self.client.create_schema(
+            enable_dynamic_field=True
+        )  # 记忆建议开，方便扩展
+
+        """
+        id
+        user_id
+        thread_id
+        memory_type
+        content
+        summary_id
+        importance
+        created_at
+        access_count
+        last_access_at
+        vector
+        sparse_vectorxF
+        """
+        # 主键
+        schema.add_field(
+            field_name="id",
+            datatype=DataType.VARCHAR,
+            max_length=50,
+            is_primary=True,
+            auto_id=True,
+        )
+
+        # 用户标识
+        schema.add_field(field_name="user_id", datatype=DataType.INT64)
+
+        # 会话标识
+        schema.add_field(
+            field_name="thread_id", datatype=DataType.VARCHAR, max_length=100
+        )
+
+        # 记忆类型: preference, fact, topic, task, repetitive
+        schema.add_field(
+            field_name="memory_type", datatype=DataType.VARCHAR, max_length=30
+        )
+
+        # 记忆内容
+        schema.add_field(
+            field_name="content",
+            datatype=DataType.VARCHAR,
+            max_length=65535,
+            enable_analyzer=True,  # 启用分词
+            analyzer_params={"type": "chinese"},
+        )
+
+        # 关联的 PostgreSQL summary_id(可选，其他两种类型默认为0)
+        schema.add_field(
+            field_name="summary_id", datatype=DataType.VARCHAR, max_length=50
+        )
+
+        # 重要性评分（0-1之间，1表示重要性最高）
+        schema.add_field(field_name="importance", datatype=DataType.FLOAT)
+
+        # 时间戳
+        schema.add_field(field_name="created_at", datatype=DataType.INT64)
+
+        schema.add_field(
+            field_name="access_count",
+            datatype=DataType.INT64,
+            default_value=0,  # 被检索次数，用于记忆淘汰
+        )
+        schema.add_field(
+            field_name="last_access_at",
+            datatype=DataType.INT64,
+            default_value=0,  # 最后访问时间，LRU 淘汰
+        )
+
+        # 向量字段
+        schema.add_field(
+            field_name="vector", datatype=DataType.FLOAT_VECTOR, dim=self.dense_dim
+        )
+
+        # BM25 稀疏向量（记忆必须关键词检索）
+        schema.add_field(
+            field_name="sparse_vector", datatype=DataType.SPARSE_FLOAT_VECTOR
+        )
+
+        # 配置 BM25 内置函数
+        bm25_function = Function(
+            name="bm25_func",
+            function_type=FunctionType.BM25,
+            input_field_names=["content"],  # 对 content 字段进行分词
+            output_field_names=["sparse_vector"],
+        )
+        schema.add_function(bm25_function)
+
+        # 配置索引
+        index_params = self.client.prepare_index_params()
+        # 向量索引
+        index_params.add_index(
+            field_name="vector",
+            index_name="vector_index",
+            index_type="HNSW",
+            metric_type="COSINE",
+            params={"M": 16, "efConstruction": 200},
+        )
+
+        # BM25 索引
+        index_params.add_index(
+            field_name="sparse_vector",
+            index_name="sparse_index",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
+        )
+
+        # 记忆集合需要添加的标量索引
+        # 高优先级（必须）
+        index_params.add_index(field_name="user_id", index_type="STL_SORT")  # 数据隔离
+        index_params.add_index(
+            field_name="thread_id", index_type="STL_SORT"
+        )  # 会话过滤
+        index_params.add_index(
+            field_name="memory_type", index_type="STL_SORT"
+        )  # 类型过滤
+
+        # 中优先级（强烈建议）
+        index_params.add_index(
+            field_name="importance", index_type="STL_SORT"
+        )  # 重要性排序
+        index_params.add_index(
+            field_name="access_count", index_type="STL_SORT"
+        )  # 热度排序
+        index_params.add_index(
+            field_name="last_access_at", index_type="STL_SORT"
+        )  # LRU淘汰
+        index_params.add_index(
+            field_name="created_at", index_type="STL_SORT"
+        )  # 时间过滤
+        # 创建集合
+        await self.client.create_collection(
+            collection_name=collection_name, schema=schema, index_params=index_params
+        )
+        # 创建集合后，加载集合
+        await self.client.load_collection(collection_name)
+
+        # 创建分区（按记忆类型）
+        await self.client.create_partition(
+            collection_name=collection_name, partition_name="summary_memory"  # 摘要记忆分区
+        )
+        await self.client.create_partition(
+            collection_name=collection_name, partition_name="episodic_memory"  # 情节记忆分区
+        )
+        await self.client.create_partition(
+            collection_name=collection_name, partition_name="procedural_memory"  # 程序记忆分区
+        )
+        logger.info(f"对话记忆集合 {collection_name} 创建成功，包含 3 个分区")
+
+    async def _init_konwledge_base_collection(self):
         """异步初始化集合，配置 BM25 内置函数"""
         # 检查集合是否已存在
-        if await self.client.has_collection(self.collection_name):
-            logger.info(f"集合 {self.collection_name} 已存在")
+        if await self.client.has_collection(self.knowledge_base_collection):
+            logger.info(f"集合 {self.knowledge_base_collection} 已存在")
+            # 加载集合
+            await self.client.load_collection(self.knowledge_base_collection)
             return
 
         # 创建 Schema
         schema = self.client.create_schema(enable_dynamic_field=True)
 
+        schema.add_field(field_name="user_id", datatype=DataType.INT64)
         schema.add_field(
-            field_name="user_id",
-            datatype=DataType.INT64
-        )
-        schema.add_field(
-            field_name="file_hash",
-            datatype=DataType.VARCHAR,
-            max_length=64
+            field_name="file_hash", datatype=DataType.VARCHAR, max_length=64
         )
         # 主键字段
         schema.add_field(
-            field_name="id",
-            datatype=DataType.INT64,
-            is_primary=True,
-            auto_id=True
+            field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True
         )
         schema.add_field(
-            field_name="parent_id",
-            datatype=DataType.VARCHAR,
-            max_length=128
+            field_name="parent_id", datatype=DataType.VARCHAR, max_length=128
         )
 
         schema.add_field(
-            field_name="knowledge_base_id",
-            datatype=DataType.VARCHAR,
-            max_length=128
+            field_name="knowledge_base_id", datatype=DataType.VARCHAR, max_length=128
         )
 
         schema.add_field(
             field_name="text",
             datatype=DataType.VARCHAR,
             max_length=65535,
-            enable_analyzer=True,
-            analyzer_params={"type": "chinese"}
+            enable_analyzer=True,  # 启用分词
+            analyzer_params={"type": "chinese"},
         )
 
-        schema.add_field(
-            field_name="metadata",
-            datatype=DataType.JSON
-        )
+        schema.add_field(field_name="metadata", datatype=DataType.JSON)
 
         schema.add_field(
             field_name="dense_vector",
             datatype=DataType.FLOAT_VECTOR,
-            dim=self.dense_dim
+            dim=self.dense_dim,
         )
 
         schema.add_field(
-            field_name="sparse_bm25",
-            datatype=DataType.SPARSE_FLOAT_VECTOR
+            field_name="sparse_bm25", datatype=DataType.SPARSE_FLOAT_VECTOR
         )
 
         # 添加 BM25 内置函数
@@ -121,7 +287,7 @@ class AsyncMilvusClientWrapper:
             name="bm25_func",
             function_type=FunctionType.BM25,
             input_field_names=["text"],
-            output_field_names=["sparse_bm25"]
+            output_field_names=["sparse_bm25"],
         )
         schema.add_function(bm25_function)
 
@@ -133,26 +299,49 @@ class AsyncMilvusClientWrapper:
             index_name="dense_index",
             index_type="HNSW",
             metric_type="COSINE",
-            params={"M": 16, "efConstruction": 200}
+            params={"M": 16, "efConstruction": 200},
         )
 
         index_params.add_index(
             field_name="sparse_bm25",
             index_name="sparse_bm25_index",
             index_type="SPARSE_INVERTED_INDEX",
-            metric_type="BM25"
+            metric_type="BM25",
+        )
+
+        # 在 _init_konwledge_base_collection 方法中，添加索引配置
+        index_params.add_index(
+            field_name="user_id",
+            index_name="user_id_idx",
+            index_type="STL_SORT",  # 整型字段，适合排序和等值查询
+        )
+
+        index_params.add_index(
+            field_name="knowledge_base_id",
+            index_name="kb_id_idx",
+            index_type="STL_SORT",  # 字符串字段，几乎每次查询都用到
+        )
+
+        index_params.add_index(
+            field_name="file_hash",
+            index_name="file_hash_idx",
+            index_type="STL_SORT",  # 用于删除文件和去重
         )
 
         # 异步创建集合
         await self.client.create_collection(
-            collection_name=self.collection_name,
+            collection_name=self.knowledge_base_collection,
             schema=schema,
-            index_params=index_params
+            index_params=index_params,
         )
+        # 创建集合后，加载集合
+        await self.client.load_collection(self.knowledge_base_collection)
 
-        logger.info(f"集合 {self.collection_name} 创建成功")
+        logger.info(f"集合 {self.knowledge_base_collection} 创建成功")
 
-    async def add_chunks_batch(self, knowledge_base_id: str, chunks: List[Document], user_id: int):
+    async def add_chunks_batch(
+        self, knowledge_base_id: str, chunks: List[Document], user_id: int
+    ):
         if not chunks:
             return
 
@@ -168,19 +357,22 @@ class AsyncMilvusClientWrapper:
 
             # 提取元数据（过滤掉已单独存储的字段）
             stored_metadata = {
-                k: v for k, v in chunk.metadata.items()
-                if k not in ["parent_id", "file_hash","knowledge_base_id", "user_id"]
+                k: v
+                for k, v in chunk.metadata.items()
+                if k not in ["parent_id", "file_hash", "knowledge_base_id", "user_id"]
             }
 
-            data.append({
-                "parent_id": chunk.metadata["parent_id"],
-                "knowledge_base_id": knowledge_base_id,
-                "text": chunk.page_content,
-                "metadata": stored_metadata,
-                "dense_vector": None,  # 占位
-                "user_id": user_id,
-                "file_hash": chunk.metadata.get("file_hash", "")
-            })
+            data.append(
+                {
+                    "parent_id": chunk.metadata["parent_id"],
+                    "knowledge_base_id": knowledge_base_id,
+                    "text": chunk.page_content,
+                    "metadata": stored_metadata,
+                    "dense_vector": None,  # 占位
+                    "user_id": user_id,
+                    "file_hash": chunk.metadata.get("file_hash", ""),
+                }
+            )
 
         # 批量向量化
         dense_vectors = await self.embeddings.aembed_documents(texts)
@@ -190,22 +382,29 @@ class AsyncMilvusClientWrapper:
             data[i]["dense_vector"] = dense_vectors[i]
 
         result = await self.client.insert(
-            collection_name=self.collection_name,
-            data=data
+            collection_name=self.knowledge_base_collection, data=data
         )
 
-        logger.info(f"已添加 {len(data)} 个子块到 Milvus 知识库:【{knowledge_base_id}】")
+        logger.info(
+            f"已添加 {len(data)} 个子块到 Milvus 知识库:【{knowledge_base_id}】"
+        )
         return result
 
-    async def hybrid_retrieval_knowledge_base(self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 10):
+    async def hybrid_retrieval_knowledge_base(
+        self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 10
+    ):
         """混合检索，返回去重后的父块ID列表，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
 
         # 构建过滤表达式
         if knowledge_base_id == "默认知识库":
-            filter_expr = f'user_id == {user_id}'   # 不添加过滤条件，搜索该用户的全部知识库
+            filter_expr = (
+                f"user_id == {user_id}"  # 不添加过滤条件，搜索该用户的全部知识库
+            )
         else:
             # 构建过滤表达式，限制在指定知识库内搜索
-            filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            filter_expr = (
+                f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            )
 
         # 生成稠密向量，带重试机制
         max_retries = 3
@@ -215,7 +414,8 @@ class AsyncMilvusClientWrapper:
                 break  # 成功则跳出循环
             except Exception as e:
                 logger.error(
-                    f"Embedding API 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    f"Embedding API 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}"
+                )
                 if attempt == max_retries - 1:  # 最后一次尝试失败
                     logger.error(f"Embedding API 最终失败，返回空结果")
                     return []  # 返回空列表，避免程序崩溃
@@ -230,7 +430,7 @@ class AsyncMilvusClientWrapper:
             anns_field="dense_vector",
             param={"metric_type": "COSINE", "params": {"ef": 64}},
             limit=top_k * 7,  # 语义召回70条
-            expr=filter_expr
+            expr=filter_expr,
         )
 
         sparse_req = AnnSearchRequest(
@@ -238,16 +438,16 @@ class AsyncMilvusClientWrapper:
             anns_field="sparse_bm25",
             param={"metric_type": "BM25"},
             limit=top_k * 3,  # bm25召回30条
-            expr=filter_expr
+            expr=filter_expr,
         )
         # 异步混合检索
         try:
             results = await self.client.hybrid_search(
-                collection_name=self.collection_name,
+                collection_name=self.knowledge_base_collection,
                 reqs=[dense_req, sparse_req],
                 ranker=RRFRanker(),
                 limit=top_k * 3,
-                output_fields=["parent_id"]
+                output_fields=["parent_id"],
             )
             """
             results的结构如下：
@@ -263,13 +463,13 @@ class AsyncMilvusClientWrapper:
             logger.error(f"混合检索失败: {e},降级为稠密向量检索")
 
             results = await self.client.search(
-                collection_name=self.collection_name,
+                collection_name=self.knowledge_base_collection,
                 data=[dense_vector],
                 anns_field="dense_vector",
                 param={"metric_type": "COSINE", "params": {"ef": 64}},
                 limit=top_k,
                 filter=filter_expr,
-                output_fields=["parent_id"]
+                output_fields=["parent_id"],
             )
             # 处理结果
             parent_ids = set()
@@ -281,28 +481,39 @@ class AsyncMilvusClientWrapper:
                     parent_ids.add(parent_id)
             return list(parent_ids)
 
-    async def delete_knowledge_file_chunks(self, knowledge_base_id: str, user_id: int) -> int:
+    async def delete_knowledge_file_chunks(
+        self, knowledge_base_id: str, user_id: int
+    ) -> int:
         """
         删除知识库中的所有文件的所有子块
         返回删除的子块数量
         """
         try:
             # 根据 knowledge_base_id 和 user_id 删除所有子块
-            filter_condition = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            filter_condition = (
+                f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            )
             result = await self.client.delete(
-                collection_name=self.collection_name,
-                filter=filter_condition
-                )
+                collection_name=self.knowledge_base_collection, filter=filter_condition
+            )
             print(f"删除知识库的结果: {result}")
             # 注意：Milvus 的 delete 操作返回的 result 中包含 delete_count
-            deleted_count = result["delete_count"] if hasattr(result, 'delete_count') else 0
-            logger.info(f"从 Milvus 删除知识库 {knowledge_base_id}（用户 {user_id}）的所有文件子块")
+            deleted_count = (
+                result["delete_count"] if hasattr(result, "delete_count") else 0
+            )
+            logger.info(
+                f"从 Milvus 删除知识库 {knowledge_base_id}（用户 {user_id}）的所有文件子块"
+            )
             return deleted_count
         except Exception as e:
-            logger.error(f"从 Milvus 删除知识库 {knowledge_base_id} 的所有文件子块失败: {e}")
+            logger.error(
+                f"从 Milvus 删除知识库 {knowledge_base_id} 的所有文件子块失败: {e}"
+            )
             raise
 
-    async def delete_flie_chunks(self, knowledge_base_id: str, file_hash: str, user_id: int) -> int:
+    async def delete_flie_chunks(
+        self, knowledge_base_id: str, file_hash: str, user_id: int
+    ) -> int:
         """删除指定文件的所有子块（只负责 Milvus 数据删除）"""
         try:
             # 构建删除表达式，包含 user_id 确保隔离
@@ -310,11 +521,14 @@ class AsyncMilvusClientWrapper:
 
             # 执行删除
             result = await self.client.delete(
-                collection_name=self.collection_name,
-                filter=filter
+                collection_name=self.knowledge_base_collection, filter=filter
             )
-            logger.info(f"从 Milvus 删除文件 {file_hash[:16]} 的子块，影响数量: {result['delete_count']}")
-            deleted_count = result["delete_count"] if hasattr(result, 'delete_count') else 0
+            logger.info(
+                f"从 Milvus 删除文件 {file_hash[:16]} 的子块，影响数量: {result['delete_count']}"
+            )
+            deleted_count = (
+                result["delete_count"] if hasattr(result, "delete_count") else 0
+            )
             return deleted_count
 
         except Exception as e:
@@ -327,15 +541,123 @@ class AsyncMilvusClientWrapper:
             await self.client.close()
             logger.info("Milvus 客户端已关闭")
 
+    # 下面是记忆相关的函数
+    async def add_memory(
+        self,
+        memory_type: str,
+        user_id: int,
+        thread_id: str,
+        content: str,
+        importance: float,
+        summary_id: Optional[str] = None,
+        **kwargs,
+    ) -> bool:
+        """
+        添加记忆到 Milvus 集合
 
-_global_milvus_client = None
+        Args:
+            memory_type: 记忆类型 (summary, episodic, procedural)
+            user_id: 用户ID
+            thread_id: 会话ID
+            content: 记忆内容
+            importance: 重要性评分 (0-1之间)
+            summary_id: 摘要ID (仅当 memory_type='summary' 时需要)
+            **kwargs: 其他可选参数 (如 created_at, access_count, last_access_at 等)
 
+        Returns:
+            bool: 是否添加成功
 
-async def get_milvus_client():
-    """获取全局 Milvus 客户端实例"""
-    global _global_milvus_client
-    if _global_milvus_client is None:
-        _global_milvus_client = AsyncMilvusClientWrapper()
-        # 启动时立即初始化集合，而不是等到第一次请求
-        await _global_milvus_client.ensure_collection()
-    return _global_milvus_client
+        Raises:
+            ValueError: 当记忆类型无效或 summary 类型缺少 summary_id 时
+            Exception: 其他添加失败的错误
+        """
+        # 验证记忆类型
+        valid_types = ["summary", "episodic", "procedural"]
+        if memory_type not in valid_types:
+            raise ValueError(
+                f"无效的记忆类型: {memory_type}，有效类型为: {valid_types}"
+            )
+
+        # 验证 summary_id
+        if memory_type == "summary":
+            if not summary_id:
+                raise ValueError(f"记忆类型为 'summary' 但未提供 summary_id")
+        else:
+            summary_id = "0"  # 非摘要类型默认为 "0"
+
+        # 确保集合已初始化
+        await self.ensure_collection()
+
+        # 准备数据
+        data = {
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "memory_type": memory_type,
+            "content": content,
+            "summary_id": summary_id,
+            "importance": float(importance),
+            "created_at": kwargs.get("created_at", int(time.time())),
+            "access_count": kwargs.get("access_count", 0),
+            "last_access_at": kwargs.get("last_access_at", 0),
+            "vector": None,  # 占位
+        }
+
+        # 生成向量
+        dense_vector = await self.embeddings.aembed_query(content)
+        data["vector"] = dense_vector
+
+        # 根据记忆类型选择分区
+        partition_name = f"{memory_type}_memory"
+
+        try:
+            # 插入数据到指定分区
+            result = await self.client.insert(
+                collection_name=self.memory_collection,
+                data=data,
+                partition_name=partition_name,
+            )
+            logger.info(
+                f"成功添加记忆 - 类型: {memory_type}, "
+                f"用户: {user_id}, 会话: {thread_id}, "
+                f"重要性: {importance}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"添加记忆到分区 {partition_name}失败: {e}")
+            raise
+
+    async def add_memories_batch(
+        self,
+        memories: List[dict],
+    ) -> int:
+        """
+        批量添加记忆
+
+        Args:
+            memories: 记忆字典列表，每个字典应包含:
+                - memory_type: 记忆类型
+                - user_id: 用户ID
+                - thread_id: 会话ID
+                - content: 记忆内容
+                - importance: 重要性评分 (可选，默认0.5)
+                - summary_id: 摘要ID (可选)
+                - 其他可选参数 (如 created_at, access_count, last_access_at 等)
+
+        Returns:
+            int: 成功添加的记忆数量
+
+        Raises:
+            Exception: 批量添加过程中的错误会向上抛出
+        """
+        if not memories:
+            return 0
+
+        success_count = 0
+
+        for memory in memories:
+            result = await self.add_memory(**memory)
+            if result:
+                success_count += 1
+
+        logger.info(f"批量添加记忆完成 - 成功: {success_count}/{len(memories)}")
+        return success_count

@@ -1,12 +1,16 @@
 import api
 import uvicorn
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI,BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from milvus_client import get_milvus_client
 from postgresql_client import get_postgresql_client
 import logging
+import asyncio
+from langchain_openai import ChatOpenAI
+from typing import Set
+from auto_summarize_psql_messages import run_compression_task
 
 # 配置日志
 logging.basicConfig(
@@ -15,6 +19,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#定时任务，没5分钟检查一次是否压缩存在psql中的消息，把压缩后的摘要存进milvus中形成摘要记忆
+async def check_and_compress_messages():
+    """检查并压缩存在psql中的消息"""
+    # 初始化摘要模型
+    summarize_model = ChatOpenAI(
+            model=os.getenv("SUMMARIZATION_MODEL", "qwen-turbo"),
+            openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
+            openai_api_base=os.getenv("BASE_URL"),
+            temperature=0.3#总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
+            )
+    while True:
+        try:
+            await run_compression_task(model=summarize_model)
+        except Exception as e:
+            logger.error(f"压缩消息失败: {e}")
+            continue
+
+        #等待5分钟，继续执行下一次压缩
+        await asyncio.sleep(300)
+
+# 全局追踪所有后台任务
+background_tasks: Set[asyncio.Task] = set()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,6 +53,11 @@ async def lifespan(app: FastAPI):
     # 初始化标志
     milvus_initialized = False
     postgresql_initialized = False
+
+    # 创建后台定时任务
+    task = asyncio.create_task(check_and_compress_messages())
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
     
     try:
         # 初始化 PostgreSQL 客户端,保存到app.state
@@ -61,17 +92,26 @@ async def lifespan(app: FastAPI):
     
     try:
         # 关闭 Milvus 连接
-        if milvus_initialized and hasattr(app.state, 'milvus_client') and app.state.milvus_client:
+        if milvus_initialized and app.state.milvus_client:
             await app.state.milvus_client.close()
             logger.info("✓ Milvus 连接已关闭")
         
         # 关闭 PostgreSQL 连接
-        if postgresql_initialized and hasattr(app.state, 'postgresql_client') and app.state.postgresql_client:
+        if postgresql_initialized and app.state.postgresql_client:
             await app.state.postgresql_client.close()
             logger.info("✓ PostgreSQL 连接已关闭")
+
+        # 取消所有后台任务
+        for task in background_tasks:
+            task.cancel()
+        
+        # 等待所有任务完成清理（不等待任务执行完毕，只等待取消完成）
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
             
     except Exception as e:
         logger.error(f"清理连接时出错: {e}")
+
     
     logger.info("应用已关闭")
 
@@ -106,7 +146,8 @@ async def _no_cache(request, call_next):
 
 if __name__ == "__main__":
     uvicorn.run(
-        app,
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", 8000)),
-    )
+    "main:app",  # 这里改成字符串
+    host=os.getenv("HOST", "0.0.0.0"),
+    port=int(os.getenv("PORT", 8000)),
+    reload=False  # 开发可以开 True，生产关闭
+)

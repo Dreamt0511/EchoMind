@@ -15,11 +15,12 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.utils import count_tokens_approximately
 from postgresql_client import get_postgresql_client
 from langchain_openai import ChatOpenAI
+from milvus_client import get_milvus_client
 import os
 logger = logging.getLogger(__name__)
 
-# Token 阈值
-TOKEN_THRESHOLD = 2000 #由于中间件压缩的是4000token但是这里压缩的只提取了human提问和ai回答，所以阈值设为2000
+# Token 阈值,debug下设置成600，生产下设置成2000
+TOKEN_THRESHOLD = 500 #由于中间件压缩的是4000token但是这里压缩的只提取了human提问和ai回答，所以阈值设为2000
 DEFAULT_SUMMARY_PROMPT = config.DEFAULT_SUMMARY_PROMPT
 
 async def compress_messages(
@@ -27,17 +28,18 @@ async def compress_messages(
     model: BaseChatModel,
 ) -> Dict[str, Any]:
     """
-    压缩对话文本为摘要，识别并返回过滤的消息ID列表(过滤的id为后半部分语义差异大且不完整的消息id)
+    压缩对话文本为摘要，识别并返回过滤的消息ID列表，同时评估重要性
 
     Args:
         messages: 原始消息列表（包含id/role/content）
         model: 用于生成摘要的 LLM 模型
 
     Returns:
-        dict: 包含summary（摘要文本）和filtered_message_ids（过滤的消息ID列表）
+        dict: 包含summary（摘要文本）、filtered_message_ids（过滤的消息ID列表）、
+              importance_score（重要性评分0-1）
     """
     if not messages:
-        return {"summary": "", "filtered_message_ids": []}
+        return {"summary": "", "filtered_message_ids": [], "importance_score": 0.0}
 
     # 格式化对话文本（包含message_id）
     formatted_lines = []
@@ -65,6 +67,15 @@ async def compress_messages(
         result = json.loads(response_content)
         summary = result.get("summary", "").strip()
         filtered_message_ids = result.get("filtered_message_ids", [])
+        importance_score = result.get("importance_score", 0.5)  # 默认0.5
+        
+        # 确保重要性评分在有效范围内
+        try:
+            importance_score = float(importance_score)
+            importance_score = max(0.0, min(1.0, importance_score))
+        except (ValueError, TypeError):
+            logger.warning(f"无效的重要性评分: {importance_score}，使用默认值0.5")
+            importance_score = 0.5
 
         # 验证过滤ID的合法性（必须是后半部分、字符串、存在于原始消息中）
         total_count = len(messages)
@@ -80,32 +91,34 @@ async def compress_messages(
                 if msg_index >= half_index:
                     valid_filtered_ids.append(str_msg_id)
 
-        # 最终摘要文本格式化
-        final_summary = f"Previous conversation summary:\n{summary}" if summary else ""
 
         logger.info(
-            f"压缩完成: 生成摘要 ({len(final_summary)} 字符)，过滤 {len(valid_filtered_ids)} 条消息"
+            f"压缩完成: 生成摘要 ({len(summary)} 字符)，"
+            f"过滤 {len(valid_filtered_ids)} 条消息，"
+            f"重要性评分: {importance_score:.2f}"
         )
 
         return {
-            "summary": final_summary,
-            "filtered_message_ids": valid_filtered_ids
+            "summary": summary,
+            "filtered_message_ids": valid_filtered_ids,
+            "importance_score": importance_score
         }
 
     except json.JSONDecodeError as e:
         logger.error(f"解析大模型JSON响应失败: {e}, 响应内容: {response_content}")
-        # 降级处理：返回全量摘要，空过滤列表
+        # 降级处理：返回全量摘要，空过滤列表，默认重要性0.3
         fallback_formatted = []
         for msg in messages:
             fallback_formatted.append(f"{msg.get('role', '').lower()}: {msg.get('content', '')}")
         fallback_summary = f"Previous conversation summary:\n{' '.join(fallback_formatted)[:2000]}"
         return {
             "summary": fallback_summary,
-            "filtered_message_ids": []
+            "filtered_message_ids": [],
+            "importance_score": 0.3  # 降级时使用较低的重要性
         }
     except Exception as e:
         logger.error(f"压缩消息失败: {e}", exc_info=True)
-        return {"summary": "", "filtered_message_ids": []}
+        return {"summary": "", "filtered_message_ids": [], "importance_score": 0.0}
 
 
 async def get_unsunmarized_conversations(user_id: int, thread_id: str) -> List[Dict[str, Any]]:
@@ -137,13 +150,13 @@ async def get_unsunmarized_conversations(user_id: int, thread_id: str) -> List[D
 
 
 async def update_messages_with_summary_id(message_ids: List[str], summary_id: str) -> bool:
-    """更新消息的 summary_id（后台任务，不抛出异常）"""
+    """更新被压缩的消息的 summary_id（后台任务，不抛出异常）"""
     try:
         pg_client = await get_postgresql_client()
         
         if not pg_client.pool:
             logger.error("数据库连接池未初始化，无法更新 summary_id")
-            return False
+            raise Exception("数据库连接池未初始化")
         
         async with pg_client.pool.acquire() as conn:
             async with conn.transaction():
@@ -152,13 +165,12 @@ async def update_messages_with_summary_id(message_ids: List[str], summary_id: st
                     SET summary_id = $1
                     WHERE id = ANY($2::text[])
                 """, summary_id, message_ids)
-                
                 logger.info(f"成功更新 {len(message_ids)} 条消息的 summary_id 为 {summary_id}")
                 return True
                 
     except Exception as e:
         logger.error(f"更新消息的 summary_id 失败: {e}", exc_info=True)
-        return False
+        raise Exception(e)
 
 
 async def compress_and_summarize_conversation(
@@ -191,13 +203,13 @@ async def compress_and_summarize_conversation(
         compress_result = await compress_messages(messages, model)
         summary = compress_result["summary"]
         filtered_message_ids = compress_result["filtered_message_ids"]
-        
+        importance_score = compress_result["importance_score"]
         # 4. 生成摘要ID
         summary_id = str(uuid.uuid4())
         
         # 5. 确定需要更新summary_id的消息（排除过滤的消息）
-        all_message_ids = [str(msg["id"]) for msg in messages]
-        update_message_ids = [mid for mid in all_message_ids if mid not in filtered_message_ids]
+        all_message_ids = [str(msg["id"]) for msg in messages]#所有消息id
+        update_message_ids = [mid for mid in all_message_ids if mid not in filtered_message_ids]#需要更新的summary_id的消息id
         
         if not update_message_ids:
             logger.warning(f"会话 {thread_id} 所有消息都被过滤，无需更新数据库")
@@ -210,25 +222,36 @@ async def compress_and_summarize_conversation(
                 "message_count": len(messages),
                 "updated_message_count": 0
             }
-        
-        # 6. 更新数据库
-        success = await update_messages_with_summary_id(update_message_ids, summary_id)
-        
-        if success:
-            logger.info(f"成功压缩会话 {thread_id}，生成摘要 {summary_id}，过滤 {len(filtered_message_ids)} 条消息")
-            return {
-                "success": True,
-                "summary_id": summary_id,
-                "summary": summary,
-                "filtered_message_ids": filtered_message_ids,
-                "token_count": total_tokens,
-                "message_count": len(messages),
-                "updated_message_count": len(update_message_ids)
-            }
-        else:
+        try:#下面这个还要考虑原子性，避免只有一个数据库的数据更新成功，理论上要2个数据库都执行成功才行，不应该出现只有一个数据库执行成功的情况，因此还得做一些特殊处理
+            # 6. 更新数据库（psql中加上summary_id字段）
+            summary_success = await update_messages_with_summary_id(update_message_ids, summary_id)
+
+            # 7. 更新Milvus数据库
+            milvus_client = await get_milvus_client()
+            milvus_success = await milvus_client.add_memory(
+                memory_type="summary",
+                user_id=user_id,
+                thread_id=thread_id,
+                content=summary,
+                summary_id=summary_id,
+                importance=importance_score,
+            )
+            if summary_success and milvus_success:
+                logger.info(f"成功压缩会话 {thread_id}，生成摘要 {summary_id}，过滤 {len(filtered_message_ids)} 条消息")
+                return {
+                    "success": True,
+                    "summary_id": summary_id,
+                    "summary": summary,
+                    "filtered_message_ids": filtered_message_ids,
+                    "importance_score": importance_score,
+                    "token_count": total_tokens,
+                    "message_count": len(messages),
+                    "updated_message_count": len(update_message_ids)
+                }
+        except Exception as e:
             return {
                 "success": False,
-                "reason": "数据库更新失败",
+                "reason": f"数据库更新失败:{str(e)}",
                 "filtered_message_ids": filtered_message_ids,
                 "token_count": total_tokens,
                 "message_count": len(messages)
@@ -341,7 +364,7 @@ async def process_all_users_conversations(
         }
 
 
-async def run_compression_task(model: BaseChatModel, user_id: int = None):
+async def run_compression_task(model: BaseChatModel):
     """定时任务入口函数（兼容user_id参数，后台任务不抛出错误）"""
     logger.info("开始执行对话压缩任务...")
     start_time = datetime.now()
@@ -369,6 +392,7 @@ async def run_compression_task(model: BaseChatModel, user_id: int = None):
             "error": str(e),
             "details": []
         }
+        
 
 
 # ============ 使用示例 ============
@@ -381,10 +405,11 @@ if __name__ == "__main__":
         model=os.getenv("SUMMARIZATION_MODEL", "qwen-turbo"),
         openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
         openai_api_base=os.getenv("BASE_URL"),
-        temperature=0.2#总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
+        temperature=0.3#总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
         )
         
         results = await run_compression_task(summarize_model)
+        print(results)
         print("\n压缩结果:")
         for detail in results["details"]:
             if detail.get("success"):

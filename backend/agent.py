@@ -174,10 +174,13 @@ async def save_conversation_messages(
             user_id=user_id, thread_id=thread_id, role="human", content=user_message
         )
 
-        # 保存 AI 回复
+
+        # 保存 AI回复
         await postgresql_client.add_conversation_message(
             user_id=user_id, thread_id=thread_id, role="ai", content=ai_message
         )
+
+        logger.info(ai_message)
 
         logger.info(f"[postgresql] 对话已保存: user_id={user_id}, thread_id={thread_id}")
 

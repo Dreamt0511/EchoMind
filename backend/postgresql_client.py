@@ -657,7 +657,7 @@ class PostgreSQLParentClient:
 
 
 
-
+#测试函数
 async def test_query_by_user(user_id: int):
     """测试按 user_id 查询对话"""
     
@@ -682,13 +682,62 @@ async def test_query_by_user(user_id: int):
             
             print(f"✅ 找到 {len(rows)} 条记录:\n")
             for row in rows:
-                print(f"  [{row['created_at']}(summary_id):{row['summary_id']})] {row['role']}: {row['content'][:200]}")
-
-            
+                print(f"  [{row['created_at']}(summary_id):{row['summary_id']})] {row['role']}: {row['content'][:200]}")            
     except Exception as e:
         print(f"❌ 查询失败: {e}")
 
+#测试函数
+async def reset_summary_id_to_null(user_id: Optional[int] = None):
+    """
+    将消息的 summary_id 重置为 NULL
+    
+    Args:
+        user_id: 可选，如果指定则只重置该用户的记录，否则重置所有用户的记录
+    
+    Returns:
+        int: 更新的记录数量
+    """
+    try:
+        pg_client = await get_postgresql_client()
+        
+        async with pg_client.pool.acquire() as conn:
+            # 构建 SQL 语句
+            if user_id is not None:
+                # 只重置指定用户的记录
+                result = await conn.execute("""
+                    UPDATE raw_conversations
+                    SET summary_id = NULL
+                    WHERE user_id = $1
+                """, user_id)
+                
+                # 获取影响的行数
+                rows_affected = result.split(" ")[-1] if result else "0"
+                
+                print(f"✅ 已重置 user_id={user_id} 的所有记录的 summary_id 为 NULL")
+                print(f"   影响记录数: {rows_affected}")
+                
+            else:
+                # 重置所有用户的记录
+                result = await conn.execute("""
+                    UPDATE raw_conversations
+                    SET summary_id = NULL
+                """)
+                
+                # 获取影响的行数
+                rows_affected = result.split(" ")[-1] if result else "0"
+                
+                print(f"✅ 已重置所有记录的 summary_id 为 NULL")
+                print(f"   影响记录数: {rows_affected}")
+            
+            return int(rows_affected) if rows_affected.isdigit() else 0
+            
+    except Exception as e:
+        print(f"❌ 重置 summary_id 失败: {e}")
+        return 0
 
 if __name__ == "__main__":
-    # 运行测试
+    #重置用户ID=1的所有记录的summary_id为NULL（调试用，用于auto_summrize_psql_message设置summary_id后的重置）
+    #asyncio.run(reset_summary_id_to_null(1))
+
+    #查看对话历史记录（用户ID=1），100条
     asyncio.run(test_query_by_user(1))
