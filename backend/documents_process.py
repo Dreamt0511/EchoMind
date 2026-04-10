@@ -11,6 +11,7 @@ from milvus_client import get_milvus_client
 import config
 from typing import List, Dict, Set
 import os
+from urllib.parse import unquote
 from pathlib import Path
 import uuid
 import hashlib
@@ -72,6 +73,8 @@ class DocumentProcessor:
         knowledge_base_id: str,
         user_id: int,
     ) -> List[Dict]:
+        # 解码 URL 编码的文件名
+        filename = unquote(filename)
         logger.info(f"{'='*20} 开始进行文本分块 {filename} {'='*20}")
 
         loader_mapping = {

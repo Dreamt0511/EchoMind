@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-#定时任务，没5分钟检查一次是否压缩存在psql中的消息，把压缩后的摘要存进milvus中形成摘要记忆
+#定时任务，每3分钟检查一次是否压缩存在psql中的消息，把压缩后的摘要存进milvus中形成摘要记忆
 async def check_and_compress_messages():
     """检查并压缩存在psql中的消息"""
     # 初始化摘要模型
@@ -27,7 +27,7 @@ async def check_and_compress_messages():
             model=os.getenv("SUMMARIZATION_MODEL", "qwen-turbo"),
             openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
             openai_api_base=os.getenv("BASE_URL"),
-            temperature=0.3#总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
+            temperature=0.6#总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
             )
     while True:
         try:
@@ -36,8 +36,8 @@ async def check_and_compress_messages():
             logger.error(f"压缩消息失败: {e}")
             continue
 
-        #等待5分钟，继续执行下一次压缩
-        await asyncio.sleep(300)
+        #等待3分钟，继续执行下一次压缩
+        await asyncio.sleep(180)
 
 # 全局追踪所有后台任务
 background_tasks: Set[asyncio.Task] = set()

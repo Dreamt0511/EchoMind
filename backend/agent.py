@@ -180,8 +180,6 @@ async def save_conversation_messages(
             user_id=user_id, thread_id=thread_id, role="ai", content=ai_message
         )
 
-        logger.info(ai_message)
-
         logger.info(f"[postgresql] 对话已保存: user_id={user_id}, thread_id={thread_id}")
 
     except Exception as e:
