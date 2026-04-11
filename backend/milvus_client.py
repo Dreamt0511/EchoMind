@@ -403,73 +403,107 @@ class AsyncMilvusClientWrapper:
                     continue
         return dense_vector
 
-    async def hybrid_retrieval_memories(self, query: str, user_id: int, top_k: int = 5):
-        """混合检索，返回召回的相似记忆内容，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
+    async def hybrid_retrieval_memories(
+        self,
+        query: str,
+        user_id: int,
+        summary_k: int = 1,
+        semantic_k: int = 3,
+        episodic_k: int = 2,
+        procedural_k: int = 2,
+    ):
+        """混合检索，每种记忆类型独立检索、去重，返回召回的相似记忆内容"""
 
-        # 构建各类型记忆的过滤表达式
-        memory_types = ["summary", "semantic", "episodic", "procedural"]
-        filters = {
-            mem_type: f"user_id == {user_id} and memory_type == '{mem_type}'"
-            for mem_type in memory_types
+        # 定义各类型记忆的参数配置
+        memory_configs = {
+            "summary": {
+                "k": summary_k,
+                "filter": f"user_id == {user_id} and memory_type == 'summary'",
+            },
+            "semantic": {
+                "k": semantic_k,
+                "filter": f"user_id == {user_id} and memory_type == 'semantic'",
+            },
+            "episodic": {
+                "k": episodic_k,
+                "filter": f"user_id == {user_id} and memory_type == 'episodic'",
+            },
+            "procedural": {
+                "k": procedural_k,
+                "filter": f"user_id == {user_id} and memory_type == 'procedural'",
+            },
         }
 
         # 生成问题稠密向量，带重试机制
         dense_vector = await self.get_dense_vector(query)
         if not dense_vector:
-            return []
+            return {}
 
         # 为每种记忆类型创建混合检索请求
-        async def search_memory_type(memory_type: str, filter_expr: str):
-            """对单个记忆类型进行混合检索"""
+        async def search_memory_type(memory_type: str, config: dict):
+            """对单个记忆类型进行混合检索、去重"""
+            k = config["k"]
+            filter_expr = config["filter"]
+
             try:
                 # 创建搜索请求
                 dense_req = AnnSearchRequest(
                     data=[dense_vector],
-                    anns_field="vector",  
+                    anns_field="vector",
                     param={"metric_type": "COSINE", "params": {"ef": 64}},
-                    limit=top_k * 2,  # 语义召回
+                    limit=k * 6,  # 语义召回：k值的6倍
                     expr=filter_expr,
                 )
 
                 sparse_req = AnnSearchRequest(
                     data=[query],
-                    anns_field="sparse_vector", 
+                    anns_field="sparse_vector",
                     param={"metric_type": "BM25"},
-                    limit=top_k,  # BM25召回
+                    limit=k * 4,  # BM25召回：k值的4倍
                     expr=filter_expr,
                 )
 
                 # 执行混合检索
                 results = await self.client.hybrid_search(
-                    collection_name=self.memories_collection,
+                    collection_name=self.memory_collection,
                     reqs=[dense_req, sparse_req],
                     ranker=RRFRanker(),
-                    limit=top_k,
+                    limit=k * 3,  # RRF返回：k值的3倍
                     output_fields=[
+                        "id",
                         "memory_type",
                         "content",
                         "summary_id",
                         "importance",
-                        "created_at",
                         "last_access_at",
                     ],
                 )
 
-                # 处理结果
+                # 处理结果：去重（基于id）
                 memories = []
+                seen_ids = set()
+
                 if results and len(results) > 0:
                     for hit in results[0]:
                         entity = hit["entity"]
-                        memories.append(
-                            {
-                                "memory_type": entity.get("memory_type"),
-                                "content": entity.get("content"),
-                                "summary_id": entity.get("summary_id"),
-                                "importance": entity.get("importance"),
-                                "created_at": entity.get("created_at"),
-                                "last_access_at": entity.get("last_access_at"),                            }
-                        )
-                return memories
+                        memory_id = entity.get("id")
+
+                        # 基于id去重
+                        if memory_id and memory_id not in seen_ids:
+                            seen_ids.add(memory_id)
+                            memories.append(
+                                {
+                                    "memory_type": entity.get("memory_type"),
+                                    "content": entity.get("content"),
+                                    "summary_id": entity.get("summary_id"),
+                                    "importance": entity.get("importance"),
+                                    "last_access_at": entity.get("last_access_at"),
+                                    "score": hit["distance"],  # RRF分数
+                                }
+                            )
+
+                # 取前2k条返回
+                return {memory_type: memories[: k * 2]}
 
             except Exception as e:
                 logger.error(
@@ -479,22 +513,23 @@ class AsyncMilvusClientWrapper:
                 # 降级为稠密向量检索
                 try:
                     results = await self.client.search(
-                        collection_name=self.memories_collection,
+                        collection_name=self.memory_collection,
                         data=[dense_vector],
                         anns_field="vector",
-                        param={"metric_type": "COSINE", "params": {"ef": 64}},
-                        limit=top_k,
+                        search_params={"metric_type": "COSINE", "params": {"ef": 64}},
+                        limit=k * 6,
                         filter=filter_expr,
                         output_fields=[
+                            "id",
                             "memory_type",
                             "content",
                             "summary_id",
                             "importance",
-                            "created_at",
                             "last_access_at",
                         ],
                     )
 
+                    # 处理结果
                     memories = []
                     if results and len(results) > 0:
                         for hit in results[0]:
@@ -505,45 +540,158 @@ class AsyncMilvusClientWrapper:
                                     "content": entity.get("content"),
                                     "summary_id": entity.get("summary_id"),
                                     "importance": entity.get("importance"),
-                                    "created_at": entity.get("created_at"),
                                     "last_access_at": entity.get("last_access_at"),
+                                    "score": hit["distance"],
                                 }
                             )
-                    return memories
+
+                    # 取前2k条返回
+                    return {memory_type: memories[: k * 2]}
 
                 except Exception as search_e:
                     logger.error(f"记忆类型 {memory_type} 稠密检索也失败: {search_e}")
-                    return []
+                    return {memory_type: []}
 
         # 并行执行所有记忆类型的检索
         tasks = [
-            search_memory_type(mem_type, filter_expr)
-            for mem_type, filter_expr in filters.items()
+            search_memory_type(mem_type, config)
+            for mem_type, config in memory_configs.items()
         ]
 
         all_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 合并和去重结果
-        all_memories = []
-        seen_ids = set()
+        # 合并结果，按记忆类型组织
+        final_results = {
+            "summary": [],
+            "semantic": [],
+            "episodic": [],
+            "procedural": [],
+        }
 
         for result in all_results:
             if isinstance(result, Exception):
                 logger.error(f"并行检索任务失败: {result}")
                 continue
 
-            if result:
-                for memory in result:
-                    # 根据记忆ID去重
-                    memory_id = memory.get("id")
-                    if memory_id not in seen_ids:
-                        seen_ids.add(memory_id)
-                        all_memories.append(memory)
+            if result and isinstance(result, dict):
+                # 合并到最终结果
+                for mem_type, memories in result.items():
+                    if mem_type in final_results:
+                        final_results[mem_type].extend(memories)
 
-        # 按分数排序并返回top_k结果
-        all_memories.sort(key=lambda x: x.get("score", 0), reverse=True)
+        top_k_memories = self.get_the_top_k_memories(
+            memory_dict=final_results,
+            memory_configs=memory_configs,
+        )
 
-        return all_memories[:top_k]
+        return top_k_memories
+        """
+        返回的结构类似下面这样
+        {
+        "summary": [
+            {
+                "memory_type": "summary",
+                "content": "用户喜欢喝美式咖啡，不加糖",
+                "summary_id": "sum_001",或者None
+                "last_access_at": 1734019200.0,  # 时间戳
+            },
+        ],
+        "semantic": [],
+        "episodic": [],
+        "procedural": [],
+        }
+        """
+
+    def get_the_top_k_memories(
+        self,
+        memory_dict: Dict[str, List[Dict]],
+        alpha: float = 0.45,  # 语义相关性权重
+        beta: float = 0.25,  # 时间新鲜度权重
+        gamma: float = 0.3,  # 重要性权重
+        memory_configs: Dict[str, Dict] = None,  # 记忆类型配置
+        type_weights: Dict[str, float] = None,  # 类型权重
+    ) -> Dict[str, List[Dict]]:
+        """
+        从记忆字典中提取每个记忆类型的前k条记录
+
+        参数塑造的AI效果：
+        这组参数塑造了一个专注但灵活的学习者：
+        它能牢牢记住核心人格（gamma=0.3），精准理解当前问题（alpha=0.45），
+        同时具备不错的记忆能力以跟上对话节奏（beta=0.25）。
+        """
+        # 默认类型权重（基于记忆的长期价值）
+        if type_weights is None:
+            type_weights = {
+                "summary": 0.7,  # 摘要记忆：信息已压缩，降权
+                "semantic": 1.3,  # 语义记忆：核心知识，提权
+                "episodic": 1.0,  # 情景记忆：标准权重
+                "procedural": 1.2,  # 程序记忆：技能习惯，较高权重
+            }
+
+        current_time = time.time()
+        DECAY_RATE = 0.995  # 时间衰减率
+
+        result = {}
+
+        for mem_type, memories in memory_dict.items():
+            if not memories:
+                result[mem_type] = []
+                continue
+
+            # 获取当前类型的权重
+            type_weight = type_weights.get(mem_type, 1.0)
+
+            scored_memories = []
+
+            for mem in memories:
+                """
+                每个mem都是一个dict,包含以下字段：
+                "memory_type": entity.get("memory_type"),
+                "content": entity.get("content"),
+                "summary_id": entity.get("summary_id"),
+                "importance": entity.get("importance"),
+                "last_access_at": entity.get("last_access_at"),
+                "score": hit["distance"],
+                """
+                # 1. 语义相关性（直接从score字段提取）
+                semantic_score = mem.get("score", 0.5)
+
+                # 2. 时间新鲜度（基于最后访问时间）
+                last_access = mem.get("last_access_at", current_time)
+                hours_passed = (current_time - last_access) / 3600
+                recency_score = DECAY_RATE**hours_passed
+
+                # 3. 重要性评分
+                importance_score = mem.get("importance", 0.5)
+
+                # 4. 综合评分（乘以类型权重）
+                final_score = (
+                    alpha * semantic_score
+                    + beta * recency_score
+                    + gamma * importance_score
+                ) * type_weight  # 关键：类型权重作为乘数
+
+                scored_memories.append(
+                    (mem, final_score)
+                )  # [(记忆内容,综合评分),(记忆内容,综合评分),...]
+
+            # 按综合评分排序，取Top K
+            scored_memories.sort(key=lambda x: x[1], reverse=True)  # x[1]是综合评分
+            # 每种类型记忆取出scored_memories中前top_k_per_type条mem
+            top_k = memory_configs[mem_type]["k"]
+
+            # 改造：只保留 memory_type, content, last_access_at 三个字段
+            result[mem_type] = [
+                {
+                    "memory_type": mem.get("memory_type"),
+                    "content": mem.get("content"),
+                    "last_access_at": mem.get("last_access_at"),
+                    "summary_id": mem.get("summary_id"),
+                }
+                for mem, _ in scored_memories[:top_k]
+            ]
+
+        return result
 
     async def hybrid_retrieval_knowledge_base(
         self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 5
@@ -592,7 +740,7 @@ class AsyncMilvusClientWrapper:
                 output_fields=["parent_id"],
             )
             """
-            results的结构如下：
+            混合搜索results的结构如下：
             data: [[
             {'id': 465176452476909908, 'distance': 0.032258063554763794,'entity': {'parent_id': 'aed97ca4-aae4-41a8-9fbc-a912ec87c7fa'}},
             {'id': 465176452476909873, 'distance': 0.03154495730996132, 'entity': {'parent_id': '7d8c5d53-1b74-4bbf-ae37-fcadf6c9b67d'}}, 
@@ -615,7 +763,15 @@ class AsyncMilvusClientWrapper:
             )
             # 处理结果
             parent_ids = set()
-
+            """
+            稠密向量检索results的结构如下：
+            data: [[{'id': 465201081576042423, 'distance': 0.7446649074554443, 'entity': {'parent_id': 'a85ecfe0-5958-4bc2-a516-a89a6e0b21be'}},
+            {'id': 465201081576042424, 'distance': 0.6389918923377991, 'entity': {'parent_id': 'a85ecfe0-5958-4bc2-a516-a89a6e0b21be'}},
+            {'id': 465201081576042425, 'distance': 0.452325701713562, 'entity': {'parent_id': 'a85ecfe0-5958-4bc2-a516-a89a6e0b21be'}}, 
+            {'id': 465201081576042426, 'distance': 0.44345560669898987, 'entity': {'parent_id': 'a85ecfe0-5958-4bc2-a516-a89a6e0b21be'}},
+            {'id': 465201081576042427, 'distance': 0.433427631855011, 'entity': {'parent_id': 'a85ecfe0-5958-4bc2-a516-a89a6e0b21be'}}]],
+            {'cost': 6}
+            """
             if results and len(results) > 0:
                 for hit in results[0]:
                     entity = hit["entity"]
@@ -792,3 +948,44 @@ class AsyncMilvusClientWrapper:
         except Exception as e:
             logger.error(f"批量插入记忆失败: {e}")
             raise
+
+
+async def example_hybrid_retrieval_memories():
+    """示例：混合检索记忆"""
+
+    # 1. 获取 Milvus 客户端
+    milvus_client = await get_milvus_client()
+
+    # 2. 调用混合检索
+    query = "我是谁"
+    user_id = 1  # 用户ID
+
+    results = await milvus_client.hybrid_retrieval_memories(
+        query=query,
+        user_id=user_id,
+        summary_k=2,  # 摘要记忆取1条
+        semantic_k=3,  # 语义记忆取3条
+        episodic_k=2,  # 情景记忆取2条
+        procedural_k=3,  # 程序记忆取2条
+    )
+
+    # 3. 打印结果
+    print("=" * 50)
+    print(f"查询: {query}")
+    print(f"用户ID: {user_id}")
+    print("=" * 50)
+
+    for mem_type, memories in results.items():
+        print(f"\n【{mem_type.upper()}】类型记忆 (共{len(memories)}条):")
+        for i, mem in enumerate(memories, 1):
+            print(f"  {i}. 内容: {mem.get('content', 'N/A')[:50]}...")
+            print(f"     评分: {mem.get('score', 'N/A'):.4f}")
+            print(f"     最后访问: {mem.get('last_access_at', 'N/A')}")
+            if mem.get("summary_id"):
+                print(f"     摘要ID: {mem['summary_id']}")
+            print()
+
+
+# 运行
+if __name__ == "__main__":
+    asyncio.run(example_hybrid_retrieval_memories())

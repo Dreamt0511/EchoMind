@@ -313,3 +313,9 @@ async def rerank_documents(query: str, documents: list, top_n=5):
                 continue
 
     return None  # 返回 None 触发降级
+
+"""rerank_result的结构示例：
+{'output': {'results': [{'document': {'text': '20 世纪80 年代末'}, 'index': 0, 
+'relevance_score': 0.886919463597282}]}, 'usage': {'total_tokens': 1224}, 
+'request_id': '2252323b-a3ba-4ef5-a203-e305b64249e1'}  
+"""

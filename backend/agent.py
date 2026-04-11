@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 import config
 from typing import AsyncGenerator
-from tools import search_knowledge_base
+from tools import search_knowledge_base, get_memory
 import json
 from schemas import ContextSchema
 from langchain.agents.middleware import (
@@ -89,7 +89,7 @@ async def stream_agent_response(
         # 创建agent
         agent = create_agent(
             model=model,
-            tools=[search_knowledge_base],
+            tools=[search_knowledge_base, get_memory],
             context_schema=ContextSchema,
             checkpointer=checkpointer,
             middleware=[

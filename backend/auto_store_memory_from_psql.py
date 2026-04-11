@@ -20,7 +20,7 @@ import os
 logger = logging.getLogger(__name__)
 
 # Token 阈值,debug下设置成600，生产下设置成2000
-TOKEN_THRESHOLD = 500 #由于中间件压缩的是4000token但是这里压缩的只提取了human提问和ai回答，所以阈值设为2000
+TOKEN_THRESHOLD = 2000 #中间件压缩的是4000token
 MEMORY_EXTRACT_PROMPT = config.MEMORY_EXTRACT_PROMPT
 
 async def extract_memories(
