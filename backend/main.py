@@ -10,7 +10,7 @@ import logging
 import asyncio
 from langchain_openai import ChatOpenAI
 from typing import Set
-from auto_summarize_psql_messages import run_compression_task
+from auto_store_memory_from_psql import run_compression_task
 
 # 配置日志
 logging.basicConfig(
@@ -19,9 +19,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-#定时任务，每3分钟检查一次是否压缩存在psql中的消息，把压缩后的摘要存进milvus中形成摘要记忆
-async def check_and_compress_messages():
-    """检查并压缩存在psql中的消息"""
+#定时任务，每3分钟检查一次是否提取存在psql中的消息，把提取后的内容存进milvus中形成摘要记忆，语义记忆，情节记忆，程序记忆，用户画像
+async def check_and_store_memory():
+    """检查并提取存在psql中的消息"""
     # 初始化摘要模型
     summarize_model = ChatOpenAI(
             model=os.getenv("SUMMARIZATION_MODEL", "qwen-turbo"),
@@ -33,7 +33,7 @@ async def check_and_compress_messages():
         try:
             await run_compression_task(model=summarize_model)
         except Exception as e:
-            logger.error(f"压缩消息失败: {e}")
+            logger.error(f"记忆存储任务失败: {e}")
             continue
 
         #等待3分钟，继续执行下一次压缩
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     postgresql_initialized = False
 
     # 创建后台定时任务
-    task = asyncio.create_task(check_and_compress_messages())
+    task = asyncio.create_task(check_and_store_memory())
     background_tasks.add(task)
     task.add_done_callback(background_tasks.discard)
     

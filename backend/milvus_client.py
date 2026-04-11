@@ -1,7 +1,7 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from langchain_core.documents import Document
 from langchain_community.embeddings import DashScopeEmbeddings
 from pymilvus import AsyncMilvusClient, DataType, Function, FunctionType
@@ -96,10 +96,9 @@ class AsyncMilvusClientWrapper:
         summary_id
         importance
         created_at
-        access_count
         last_access_at
         vector
-        sparse_vectorxF
+        sparse_vector
         """
         # 主键
         schema.add_field(
@@ -111,7 +110,9 @@ class AsyncMilvusClientWrapper:
         )
 
         # 用户标识
-        schema.add_field(field_name="user_id", datatype=DataType.INT64)
+        schema.add_field(
+            field_name="user_id", datatype=DataType.INT64, is_partition_key=True
+        )  # 将user_id作为分区密钥
 
         # 会话标识
         schema.add_field(
@@ -134,7 +135,7 @@ class AsyncMilvusClientWrapper:
 
         # 关联的 PostgreSQL summary_id(可选，其他两种类型默认为0)
         schema.add_field(
-            field_name="summary_id", datatype=DataType.VARCHAR, max_length=50
+            field_name="summary_id", datatype=DataType.VARCHAR, max_length=50,nullable=True#非摘要记忆允许为空
         )
 
         # 重要性评分（0-1之间，1表示重要性最高）
@@ -143,11 +144,6 @@ class AsyncMilvusClientWrapper:
         # 时间戳
         schema.add_field(field_name="created_at", datatype=DataType.INT64)
 
-        schema.add_field(
-            field_name="access_count",
-            datatype=DataType.INT64,
-            default_value=0,  # 被检索次数，用于记忆淘汰
-        )
         schema.add_field(
             field_name="last_access_at",
             datatype=DataType.INT64,
@@ -207,9 +203,6 @@ class AsyncMilvusClientWrapper:
             field_name="importance", index_type="STL_SORT"
         )  # 重要性排序
         index_params.add_index(
-            field_name="access_count", index_type="STL_SORT"
-        )  # 热度排序
-        index_params.add_index(
             field_name="last_access_at", index_type="STL_SORT"
         )  # LRU淘汰
         index_params.add_index(
@@ -217,22 +210,13 @@ class AsyncMilvusClientWrapper:
         )  # 时间过滤
         # 创建集合
         await self.client.create_collection(
-            collection_name=collection_name, schema=schema, index_params=index_params
+            collection_name=collection_name,
+            schema=schema,
+            index_params=index_params,
+            properties={"partitionkey.isolation": True},  # 启用分区密钥隔离功能
         )
         # 创建集合后，加载集合
         await self.client.load_collection(collection_name)
-
-        # 创建分区（按记忆类型）
-        await self.client.create_partition(
-            collection_name=collection_name, partition_name="summary_memory"  # 摘要记忆分区
-        )
-        await self.client.create_partition(
-            collection_name=collection_name, partition_name="episodic_memory"  # 情节记忆分区
-        )
-        await self.client.create_partition(
-            collection_name=collection_name, partition_name="procedural_memory"  # 程序记忆分区
-        )
-        logger.info(f"对话记忆集合 {collection_name} 创建成功，包含 3 个分区")
 
     async def _init_konwledge_base_collection(self):
         """异步初始化集合，配置 BM25 内置函数"""
@@ -246,7 +230,9 @@ class AsyncMilvusClientWrapper:
         # 创建 Schema
         schema = self.client.create_schema(enable_dynamic_field=True)
 
-        schema.add_field(field_name="user_id", datatype=DataType.INT64)
+        schema.add_field(
+            field_name="user_id", datatype=DataType.INT64, is_partition_key=True
+        )  # 将user_id作为分区密钥
         schema.add_field(
             field_name="file_hash", datatype=DataType.VARCHAR, max_length=64
         )
@@ -333,6 +319,7 @@ class AsyncMilvusClientWrapper:
             collection_name=self.knowledge_base_collection,
             schema=schema,
             index_params=index_params,
+            properties={"partitionkey.isolation": True},  # 启用分区密钥隔离功能
         )
         # 创建集合后，加载集合
         await self.client.load_collection(self.knowledge_base_collection)
@@ -542,122 +529,111 @@ class AsyncMilvusClientWrapper:
             logger.info("Milvus 客户端已关闭")
 
     # 下面是记忆相关的函数
-    async def add_memory(
+    async def add_memories_batch(
         self,
-        memory_type: str,
         user_id: int,
         thread_id: str,
-        content: str,
-        importance: float,
+        memory_dict: Dict[str, Any],
         summary_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
         """
-        添加记忆到 Milvus 集合
+        批量添加记忆到 Milvus 集合
 
         Args:
-            memory_type: 记忆类型 (summary, episodic, procedural)
             user_id: 用户ID
             thread_id: 会话ID
-            content: 记忆内容
-            importance: 重要性评分 (0-1之间)
-            summary_id: 摘要ID (仅当 memory_type='summary' 时需要)
-            **kwargs: 其他可选参数 (如 created_at, access_count, last_access_at 等)
+            memory_dict: 记忆字典，格式为：
+                {
+                    "summary": {"content": str, "importance_score": float},
+                    "semantic_memory": [{"content": str, "importance_score": float}, ...],
+                    "episodic_memory": [{"content": str, "importance_score": float}, ...],
+                    "procedural_memory": [{"content": str, "importance_score": float}, ...],
+                }
+            summary_id: 摘要ID（可选，不提供则默认为 "0"）
+            **kwargs: 其他可选参数 (如 created_at, last_access_at 等)
 
         Returns:
             bool: 是否添加成功
-
-        Raises:
-            ValueError: 当记忆类型无效或 summary 类型缺少 summary_id 时
-            Exception: 其他添加失败的错误
         """
-        # 验证记忆类型
-        valid_types = ["summary", "episodic", "procedural"]
-        if memory_type not in valid_types:
-            raise ValueError(
-                f"无效的记忆类型: {memory_type}，有效类型为: {valid_types}"
-            )
-
-        # 验证 summary_id
-        if memory_type == "summary":
-            if not summary_id:
-                raise ValueError(f"记忆类型为 'summary' 但未提供 summary_id")
-        else:
-            summary_id = "0"  # 非摘要类型默认为 "0"
-
-        # 确保集合已初始化
         await self.ensure_collection()
 
-        # 准备数据
-        data = {
-            "user_id": user_id,
-            "thread_id": thread_id,
-            "memory_type": memory_type,
-            "content": content,
-            "summary_id": summary_id,
-            "importance": float(importance),
-            "created_at": kwargs.get("created_at", int(time.time())),
-            "access_count": kwargs.get("access_count", 0),
-            "last_access_at": kwargs.get("last_access_at", 0),
-            "vector": None,  # 占位
+        created_at = kwargs.get("created_at", int(time.time()))
+        last_access_at = kwargs.get("last_access_at", int(time.time()))
+
+        texts_to_embed = []# 用于存储所有需要嵌入的文本
+        records_to_insert = []# 用于存储所有需要插入的记录
+        
+        # 处理 summary
+        summary = memory_dict.get("summary", {})
+        if summary and summary.get("content", "").strip():
+            content = summary["content"].strip()
+            texts_to_embed.append(content)
+            records_to_insert.append(
+                {
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "memory_type": "summary",
+                    "content": content,
+                    "summary_id": summary_id,
+                    "importance": float(summary.get("importance_score", 0.5)),
+                    "created_at": created_at,
+                    "last_access_at": last_access_at,
+                }
+            )
+
+        # 处理三类记忆
+        type_mapping = {
+            "semantic_memory": "semantic",
+            "episodic_memory": "episodic",
+            "procedural_memory": "procedural",
         }
 
-        # 生成向量
-        dense_vector = await self.embeddings.aembed_query(content)
-        data["vector"] = dense_vector
+        for key, memory_type in type_mapping.items():
+            items = memory_dict.get(key, [])
+            if not isinstance(items, list):
+                continue
 
-        # 根据记忆类型选择分区
-        partition_name = f"{memory_type}_memory"
+            for item in items:# 遍历该类型记忆的每个记忆项
+                if isinstance(item, dict):
+                    content = item.get("content", "").strip()
+                    if content:
+                        texts_to_embed.append(content)
+                        records_to_insert.append(
+                            {
+                                "user_id": user_id,
+                                "thread_id": thread_id,
+                                "memory_type": memory_type,
+                                "content": content,
+                                "summary_id": None,#非摘要记忆的summary_id为空
+                                "importance": float(item.get("importance_score", 0.5)),
+                                "created_at": created_at,
+                                "last_access_at": last_access_at,
+                            }
+                        )
 
+        if not texts_to_embed:
+            logger.warning("没有有效内容需要插入")
+            return False
+
+        # 批量向量化
+        vectors = await self.embeddings.aembed_documents(texts_to_embed)
+
+        # 添加向量
+        for record, vector in zip(records_to_insert, vectors):
+            record["vector"] = vector
+
+        # 一次性批量插入
         try:
-            # 插入数据到指定分区
-            result = await self.client.insert(
+            await self.client.insert(
                 collection_name=self.memory_collection,
-                data=data,
-                partition_name=partition_name,
+                data=records_to_insert,
             )
             logger.info(
-                f"成功添加记忆 - 类型: {memory_type}, "
-                f"用户: {user_id}, 会话: {thread_id}, "
-                f"重要性: {importance}"
+                f"批量添加记忆完成 - 总计: {len(records_to_insert)} 条, "
+                f"用户: {user_id}, 会话: {thread_id}, summary_id: {summary_id}"
             )
             return True
         except Exception as e:
-            logger.error(f"添加记忆到分区 {partition_name}失败: {e}")
+            logger.error(f"批量插入记忆失败: {e}")
             raise
-
-    async def add_memories_batch(
-        self,
-        memories: List[dict],
-    ) -> int:
-        """
-        批量添加记忆
-
-        Args:
-            memories: 记忆字典列表，每个字典应包含:
-                - memory_type: 记忆类型
-                - user_id: 用户ID
-                - thread_id: 会话ID
-                - content: 记忆内容
-                - importance: 重要性评分 (可选，默认0.5)
-                - summary_id: 摘要ID (可选)
-                - 其他可选参数 (如 created_at, access_count, last_access_at 等)
-
-        Returns:
-            int: 成功添加的记忆数量
-
-        Raises:
-            Exception: 批量添加过程中的错误会向上抛出
-        """
-        if not memories:
-            return 0
-
-        success_count = 0
-
-        for memory in memories:
-            result = await self.add_memory(**memory)
-            if result:
-                success_count += 1
-
-        logger.info(f"批量添加记忆完成 - 成功: {success_count}/{len(memories)}")
-        return success_count
