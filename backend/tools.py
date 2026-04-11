@@ -20,6 +20,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+
+@tool("get_memory")
+async def get_memory(query:str,semantic_k:str,episodic_k:str,procedural_k:str,runtime: ToolRuntime[ContextSchema]) -> str:
+  """
+功能：根据用户输入问题类型，动态决策从记忆库中召回的各类记忆的最佳数量，用于辅助后续问题回答。
+
+决策逻辑：
+- 语义记忆（semantic_k）：事实、概念、知识定义。事实性问题（是什么/定义）取3-5条，历史回忆取1-2条。
+- 情节记忆（episodic_k）：历史事件、过往对话、用户行为记录。重复提问/历史回忆取3-5条，事实性问题取2-3条，操作性问题取1-2条。
+- 程序记忆（procedural_k）：方法流程、技能步骤、处理策略。操作性问题/重复困惑取2-3条，事实性问题取2-3条，历史回忆取1-2条。
+
+取值范围：0-5
+- 0：不需要该类记忆
+- 1-2：辅助参考
+- 3-5：核心依赖
+- 6-10：极少使用（仅当问题明确需要大量历史遍历时）
+
+Args:
+    query: 用户输入的问题
+    semantic_k: 语义记忆召回数量。适用于概念解释、知识问答、事实确认。一般问题1-3条。
+    episodic_k: 情节记忆召回数量。适用于回顾历史、追踪用户行为、重复问题检测。一般问题1-3条。
+    procedural_k: 程序记忆召回数量。适用于操作指南、步骤说明、策略复用。技术/操作类问题1-2条。
+
+Returns:
+    无返回值。该工具仅用于记录决策结果，实际检索由调用方执行。
+"""
+    
+
+
 @tool("search_knowledge_base")
 async def search_knowledge_base(query: str, # 只需要 query，其他从 runtime 获取
                                 runtime: ToolRuntime[ContextSchema]) -> str:

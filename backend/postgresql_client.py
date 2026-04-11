@@ -264,12 +264,11 @@ class PostgreSQLParentClient:
                     # 1. 先确保用户存在
                     await conn.execute(
                         """
-                        INSERT INTO users (user_id, username)
-                        VALUES ($1, $2)
+                        INSERT INTO users (user_id,created_at)
+                        VALUES ($1,CURRENT_TIMESTAMP)
                         ON CONFLICT (user_id) DO NOTHING
                     """,
                         user_id,
-                        f"user_{user_id}",
                     )
                     # 插入新知识库
                     await conn.execute(
@@ -439,12 +438,11 @@ class PostgreSQLParentClient:
                     # 1. 先确保用户存在
                     await conn.execute(
                         """
-                        INSERT INTO users (user_id, username)
-                        VALUES ($1, $2)
+                        INSERT INTO users (user_id, created_at)
+                        VALUES ($1, CURRENT_TIMESTAMP)
                         ON CONFLICT (user_id) DO NOTHING
                     """,
                         user_id,
-                        f"user_{user_id}",
                     )
 
                     # 2. 再确保知识库存在

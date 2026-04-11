@@ -97,8 +97,8 @@ class AsyncMilvusClientWrapper:
         importance
         created_at
         last_access_at
-        vector
-        sparse_vector
+        vector#稠密向量
+        sparse_vector#bm25向量
         """
         # 主键
         schema.add_field(
@@ -135,7 +135,10 @@ class AsyncMilvusClientWrapper:
 
         # 关联的 PostgreSQL summary_id(可选，其他两种类型默认为0)
         schema.add_field(
-            field_name="summary_id", datatype=DataType.VARCHAR, max_length=50,nullable=True#非摘要记忆允许为空
+            field_name="summary_id",
+            datatype=DataType.VARCHAR,
+            max_length=50,
+            nullable=True,  # 非摘要记忆允许为空
         )
 
         # 重要性评分（0-1之间，1表示重要性最高）
@@ -377,23 +380,11 @@ class AsyncMilvusClientWrapper:
         )
         return result
 
-    async def hybrid_retrieval_knowledge_base(
-        self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 10
-    ):
-        """混合检索，返回去重后的父块ID列表，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
-
-        # 构建过滤表达式
-        if knowledge_base_id == "默认知识库":
-            filter_expr = (
-                f"user_id == {user_id}"  # 不添加过滤条件，搜索该用户的全部知识库
-            )
-        else:
-            # 构建过滤表达式，限制在指定知识库内搜索
-            filter_expr = (
-                f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
-            )
-
-        # 生成稠密向量，带重试机制
+    async def get_dense_vector(
+        self,
+        query: str,
+    ) -> List[float]:
+        """生成稠密向量，带重试机制"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -410,6 +401,170 @@ class AsyncMilvusClientWrapper:
                     logger.warning(f"等待 1 秒后重试...")
                     await asyncio.sleep(1)
                     continue
+        return dense_vector
+
+    async def hybrid_retrieval_memories(self, query: str, user_id: int, top_k: int = 5):
+        """混合检索，返回召回的相似记忆内容，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
+
+        # 构建各类型记忆的过滤表达式
+        memory_types = ["summary", "semantic", "episodic", "procedural"]
+        filters = {
+            mem_type: f"user_id == {user_id} and memory_type == '{mem_type}'"
+            for mem_type in memory_types
+        }
+
+        # 生成问题稠密向量，带重试机制
+        dense_vector = await self.get_dense_vector(query)
+        if not dense_vector:
+            return []
+
+        # 为每种记忆类型创建混合检索请求
+        async def search_memory_type(memory_type: str, filter_expr: str):
+            """对单个记忆类型进行混合检索"""
+            try:
+                # 创建搜索请求
+                dense_req = AnnSearchRequest(
+                    data=[dense_vector],
+                    anns_field="vector",  
+                    param={"metric_type": "COSINE", "params": {"ef": 64}},
+                    limit=top_k * 2,  # 语义召回
+                    expr=filter_expr,
+                )
+
+                sparse_req = AnnSearchRequest(
+                    data=[query],
+                    anns_field="sparse_vector", 
+                    param={"metric_type": "BM25"},
+                    limit=top_k,  # BM25召回
+                    expr=filter_expr,
+                )
+
+                # 执行混合检索
+                results = await self.client.hybrid_search(
+                    collection_name=self.memories_collection,
+                    reqs=[dense_req, sparse_req],
+                    ranker=RRFRanker(),
+                    limit=top_k,
+                    output_fields=[
+                        "memory_type",
+                        "content",
+                        "summary_id",
+                        "importance",
+                        "created_at",
+                        "last_access_at",
+                    ],
+                )
+
+                # 处理结果
+                memories = []
+                if results and len(results) > 0:
+                    for hit in results[0]:
+                        entity = hit["entity"]
+                        memories.append(
+                            {
+                                "memory_type": entity.get("memory_type"),
+                                "content": entity.get("content"),
+                                "summary_id": entity.get("summary_id"),
+                                "importance": entity.get("importance"),
+                                "created_at": entity.get("created_at"),
+                                "last_access_at": entity.get("last_access_at"),                            }
+                        )
+                return memories
+
+            except Exception as e:
+                logger.error(
+                    f"记忆类型 {memory_type} 混合检索失败: {e}, 降级为稠密向量检索"
+                )
+
+                # 降级为稠密向量检索
+                try:
+                    results = await self.client.search(
+                        collection_name=self.memories_collection,
+                        data=[dense_vector],
+                        anns_field="vector",
+                        param={"metric_type": "COSINE", "params": {"ef": 64}},
+                        limit=top_k,
+                        filter=filter_expr,
+                        output_fields=[
+                            "memory_type",
+                            "content",
+                            "summary_id",
+                            "importance",
+                            "created_at",
+                            "last_access_at",
+                        ],
+                    )
+
+                    memories = []
+                    if results and len(results) > 0:
+                        for hit in results[0]:
+                            entity = hit["entity"]
+                            memories.append(
+                                {
+                                    "memory_type": entity.get("memory_type"),
+                                    "content": entity.get("content"),
+                                    "summary_id": entity.get("summary_id"),
+                                    "importance": entity.get("importance"),
+                                    "created_at": entity.get("created_at"),
+                                    "last_access_at": entity.get("last_access_at"),
+                                }
+                            )
+                    return memories
+
+                except Exception as search_e:
+                    logger.error(f"记忆类型 {memory_type} 稠密检索也失败: {search_e}")
+                    return []
+
+        # 并行执行所有记忆类型的检索
+        tasks = [
+            search_memory_type(mem_type, filter_expr)
+            for mem_type, filter_expr in filters.items()
+        ]
+
+        all_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 合并和去重结果
+        all_memories = []
+        seen_ids = set()
+
+        for result in all_results:
+            if isinstance(result, Exception):
+                logger.error(f"并行检索任务失败: {result}")
+                continue
+
+            if result:
+                for memory in result:
+                    # 根据记忆ID去重
+                    memory_id = memory.get("id")
+                    if memory_id not in seen_ids:
+                        seen_ids.add(memory_id)
+                        all_memories.append(memory)
+
+        # 按分数排序并返回top_k结果
+        all_memories.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+        return all_memories[:top_k]
+
+    async def hybrid_retrieval_knowledge_base(
+        self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 5
+    ):
+        """混合检索，返回去重后的父块ID列表，混合检索失败时自动降级为稠密向量检索（即语义搜索）"""
+
+        # 构建过滤表达式
+        if knowledge_base_id == "默认知识库":
+            filter_expr = (
+                f"user_id == {user_id}"  # 不添加过滤条件，搜索该用户的全部知识库
+            )
+        else:
+            # 构建过滤表达式，限制在指定知识库内搜索
+            filter_expr = (
+                f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+            )
+
+        # 生成稠密向量，带重试机制
+        dense_vector = await self.get_dense_vector(query)
+        if not dense_vector:
+            return []
 
         # 创建搜索请求
         dense_req = AnnSearchRequest(
@@ -453,7 +608,7 @@ class AsyncMilvusClientWrapper:
                 collection_name=self.knowledge_base_collection,
                 data=[dense_vector],
                 anns_field="dense_vector",
-                param={"metric_type": "COSINE", "params": {"ef": 64}},
+                search_params={"metric_type": "COSINE", "params": {"ef": 64}},
                 limit=top_k,
                 filter=filter_expr,
                 output_fields=["parent_id"],
@@ -561,9 +716,9 @@ class AsyncMilvusClientWrapper:
         created_at = kwargs.get("created_at", int(time.time()))
         last_access_at = kwargs.get("last_access_at", int(time.time()))
 
-        texts_to_embed = []# 用于存储所有需要嵌入的文本
-        records_to_insert = []# 用于存储所有需要插入的记录
-        
+        texts_to_embed = []  # 用于存储所有需要嵌入的文本
+        records_to_insert = []  # 用于存储所有需要插入的记录
+
         # 处理 summary
         summary = memory_dict.get("summary", {})
         if summary and summary.get("content", "").strip():
@@ -594,7 +749,7 @@ class AsyncMilvusClientWrapper:
             if not isinstance(items, list):
                 continue
 
-            for item in items:# 遍历该类型记忆的每个记忆项
+            for item in items:  # 遍历该类型记忆的每个记忆项
                 if isinstance(item, dict):
                     content = item.get("content", "").strip()
                     if content:
@@ -605,7 +760,7 @@ class AsyncMilvusClientWrapper:
                                 "thread_id": thread_id,
                                 "memory_type": memory_type,
                                 "content": content,
-                                "summary_id": None,#非摘要记忆的summary_id为空
+                                "summary_id": None,  # 非摘要记忆的summary_id为空
                                 "importance": float(item.get("importance_score", 0.5)),
                                 "created_at": created_at,
                                 "last_access_at": last_access_at,

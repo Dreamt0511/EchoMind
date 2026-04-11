@@ -251,7 +251,7 @@ async def rerank_documents(query: str, documents: list, top_n=5):
         logger.info(f"重排序输入文档数从 {len(documents)} 截取到 {max_input}")
         documents = documents[:max_input]
 
-    rerank_model = os.getenv("RERANK_MODEL", "qwen3-rerank")
+    rerank_model = os.getenv("RERANK_MODEL", "gte-rerank-v2")
     api_key = os.getenv("DASHSCOPE_API_KEY")
     if not api_key:
         logger.error("错误: 请先在环境变量中设置 DASHSCOPE_API_KEY")
