@@ -147,22 +147,6 @@
     font-size: 0.9rem;
 }
 
-/* 机器人容器 - 调整位置，向下移动 */
-.robot-icon-container {
-    position: relative;
-    cursor: pointer;
-    transition: transform 0.3s ease;
-    margin-top: 10px;  /* 向下移动30px */
-    margin-left:-10px; /* 向右移动50px，可以根据需要调整数值 */
-    margin-bottom: 5px;
-    transform: scale(0.8);  /* 整体放大1.2倍，包括所有子元素 */
-    transform-origin: center;  /* 设置缩放中心点为中心 */
-}
-
-.robot-icon-container:hover {
-    transform: scale(0.9);
-}
-
 /* 3D机器人主体 */
 .robot-3d {
     position: relative;
@@ -804,5 +788,128 @@ button[data-testid="baseButton-secondary"][key="clear_history_btn"]:hover {
     }
     60%, 100% {
         content: '...';
+    }
+}
+/* ========== 机器人提示框样式（追加到末尾） ========== */
+
+/* 让侧边栏允许子元素溢出（关键！） */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div:first-child {
+    overflow: visible !important;
+}
+
+/* 机器人容器相对定位，允许溢出 */
+.robot-icon-container {
+    position: relative;
+    overflow: visible !important;
+    cursor: pointer;
+    z-index: 1000;
+}
+
+/* 外部提示框样式 - 绝对定位，出现在机器人右侧（主区域） */
+.robot-tooltip-external {
+    position: absolute;
+    left: 120%;        /* 水平位置：100% 表示紧贴机器人右侧 */
+    top: -20px;            /* 垂直位置：0 表示与机器人顶部对齐 */
+    margin-left: 15px; /* 与机器人的间距 */
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.95) 0%, rgba(118, 75, 162, 0.95) 100%);
+    padding: 12px 18px;      /* 内边距：上下20px，左右24px */
+    border-radius: 20px;
+    min-width: 320px;        /* 最小宽度 */
+    max-width: 400px;        /* 最大宽度 */
+    width: auto;             /* 宽度自动 */
+    color: white;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    box-shadow: 0 20px 60px rgba(102, 126, 234, 0.5);
+    backdrop-filter: blur(20px);
+    z-index: 999999;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    pointer-events: none;
+}
+
+.robot-icon-container:hover .robot-tooltip-external {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(10px);
+}
+
+.robot-tooltip-external::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 30px;
+    width: 0;
+    height: 0;
+    border-top: 12px solid transparent;
+    border-bottom: 12px solid transparent;
+    border-right: 12px solid rgba(102, 126, 234, 0.95);
+}
+
+/* 提示框内部样式 */
+.tooltip-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(90deg, #fff, #e0e7ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.memory-icon {
+    display: inline-block;
+    animation: pulseMemory 2s ease-in-out infinite;
+}
+
+@keyframes pulseMemory {
+    0%, 100% { transform: scale(1); filter: drop-shadow(0 0 2px rgba(255,255,255,0.5)); }
+    50% { transform: scale(1.1); filter: drop-shadow(0 0 10px rgba(255,255,255,0.9)); }
+}
+
+.tooltip-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+    margin: 12px 0;
+}
+
+.tooltip-content {
+    color: rgba(255, 255, 255, 0.95);
+    line-height: 1.8;
+}
+
+.tooltip-tag {
+    display: inline-block;
+    background: rgba(255,255,255,0.15);
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    margin-top: 10px;
+    border: 1px solid rgba(255,255,255,0.2);
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .robot-tooltip-external {
+        left: auto;
+        right: 0;
+        top: 100%;
+        margin-top: 10px;
+        min-width: 260px;
+        max-width: 280px;
+    }
+    .robot-tooltip-external::before {
+        left: 20px;
+        top: -12px;
+        border-left: 12px solid transparent;
+        border-right: 12px solid transparent;
+        border-bottom: 12px solid rgba(102, 126, 234, 0.95);
+        border-top: none;
     }
 }

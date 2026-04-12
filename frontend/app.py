@@ -884,7 +884,6 @@ if st.session_state.get('needs_rerun'):
 # 侧边栏 UI（支持骨架屏和异步加载）
 # ==========================================
 with st.sidebar:
-    # 标题部分始终显示
     st.markdown("""
     <div class="main-header">
         <div class="header-container">
@@ -923,6 +922,19 @@ with st.sidebar:
                 <div class="ai-status">
                     <span class="status-dot"></span>
                     <span class="status-text">Active</span>
+                </div>
+                <div class="robot-tooltip-external">
+                    <div class="tooltip-title">
+                        <span class="memory-icon">🧠</span>
+                        你好，我是 EchoMind
+                    </div>
+                    <div class="tooltip-divider"></div>
+                    <div class="tooltip-content">
+                        我具备<span style="color:#ffd700; font-weight:600;">长期记忆能力</span>，后台自动提取记忆<br>能够记住我们过往的所有交互历史哦
+                    </div>
+                    <div class="tooltip-tag">知识库管理</div>
+                    <div class="tooltip-tag">长期记忆</div>
+                    <div class="tooltip-tag">个性化体验</div>
                 </div>
             </div>
         </div>
