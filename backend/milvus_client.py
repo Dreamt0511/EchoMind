@@ -407,31 +407,23 @@ class AsyncMilvusClientWrapper:
         self,
         query: str,
         user_id: int,
-        summary_k: int = 1,
-        semantic_k: int = 3,
-        episodic_k: int = 2,
-        procedural_k: int = 2,
+        summary_k: int,
+        semantic_k: int,
+        episodic_k: int,
+        procedural_k: int,
     ):
-        """混合检索，每种记忆类型独立检索、去重，返回召回的相似记忆内容"""
+        """混合检索，每种记忆类型并行检索、去重，返回召回的相似记忆内容"""
 
-        # 定义各类型记忆的参数配置
+        # 定义各类型记忆的参数配置（只有k值不为0的类型才会被检索）
         memory_configs = {
-            "summary": {
-                "k": summary_k,
-                "filter": f"user_id == {user_id} and memory_type == 'summary'",
-            },
-            "semantic": {
-                "k": semantic_k,
-                "filter": f"user_id == {user_id} and memory_type == 'semantic'",
-            },
-            "episodic": {
-                "k": episodic_k,
-                "filter": f"user_id == {user_id} and memory_type == 'episodic'",
-            },
-            "procedural": {
-                "k": procedural_k,
-                "filter": f"user_id == {user_id} and memory_type == 'procedural'",
-            },
+            key: {"k": k, "filter": f"user_id == {user_id} and memory_type == '{key}'"}
+            for key, k in {
+                "summary": summary_k,
+                "semantic": semantic_k,
+                "episodic": episodic_k,
+                "procedural": procedural_k,
+            }.items()
+            if k
         }
 
         # 生成问题稠密向量，带重试机制
@@ -839,7 +831,98 @@ class AsyncMilvusClientWrapper:
             await self.client.close()
             logger.info("Milvus 客户端已关闭")
 
-    # 下面是记忆相关的函数
+    # 下面是检索相似记忆相关函数
+    async def resolve_conflicts(self, filtered_memory: dict, user_id: int) -> dict:
+        """检测并删除重复记忆"""
+
+        # 1. 收集所有需要检测的记忆（内容、类型、位置）
+        items = []  # 每个元素: (memory_key, index, content, mem_type)
+
+        for key in ["semantic_memory", "episodic_memory", "procedural_memory"]:
+            for idx, mem in enumerate(filtered_memory.get(key, [])):
+                items.append((key, idx, mem["content"], key.replace("_memory", "")))
+
+        if filtered_memory.get("summary"):
+            items.append(
+                ("summary", None, filtered_memory["summary"]["content"], "summary")
+            )
+
+        if not items:
+            return filtered_memory
+
+        # 2. 一次批量向量化所有内容
+        vectors = await self.embeddings.aembed_documents([item[2] for item in items])
+
+        # 3. 按类型分组，并行批量检索
+        from collections import defaultdict
+
+        type_to_items = defaultdict(list)
+        type_to_vectors = defaultdict(list)
+
+        for item, vec in zip(items, vectors):
+            mem_type = item[3]
+            type_to_items[mem_type].append(item)
+            type_to_vectors[mem_type].append(vec)
+
+        async def search_type(mem_type, type_items, type_vectors):
+            """检索同一类型的所有记忆"""
+            filter_expr = f"user_id == {user_id} and memory_type == '{mem_type}'"
+            results = await self.client.search(
+                collection_name=self.memory_collection,  # 修正：使用 memory_collection
+                data=type_vectors,
+                anns_field="vector",  # 修正：你的向量字段名是 "vector"
+                search_params={"metric_type": "COSINE", "params": {"ef": 64}},
+                limit=1,
+                filter=filter_expr,
+                output_fields=["distance"],
+            )
+            # 返回每个记忆是否相似
+            return [
+                results and results[i] and results[i][0]["distance"] >= 0.85  # 0.85 是一个经验值，根据需要调整
+                for i in range(len(type_items))
+            ]
+
+        # 并行处理所有类型
+        tasks = [
+            search_type(t, type_to_items[t], type_to_vectors[t]) for t in type_to_items
+        ]
+        all_results = await asyncio.gather(*tasks)
+
+        # 展平结果，建立相似标记
+        is_similar_list = []
+        for results in all_results:
+            is_similar_list.extend(results)
+
+        # 4. 标记需要删除的记忆
+        to_remove = {
+            "semantic_memory": [],
+            "episodic_memory": [],
+            "procedural_memory": [],
+        }
+        clear_summary = False
+
+        for (key, idx, _, _), is_similar in zip(items, is_similar_list):
+            if not is_similar:
+                continue
+            if key == "summary":
+                clear_summary = True
+            elif idx is not None:
+                to_remove[key].append(idx)
+
+        # 5. 执行删除
+        for key, indices in to_remove.items():
+            if indices:
+                memories = filtered_memory[key]
+                for idx in sorted(indices, reverse=True):
+                    if idx < len(memories):
+                        del memories[idx]
+
+        if clear_summary:
+            filtered_memory["summary"] = {}
+
+        return filtered_memory
+
+    # 下面是增加记忆相关函数
     async def add_memories_batch(
         self,
         user_id: int,
@@ -950,42 +1033,131 @@ class AsyncMilvusClientWrapper:
             raise
 
 
-async def example_hybrid_retrieval_memories():
-    """示例：混合检索记忆"""
 
-    # 1. 获取 Milvus 客户端
-    milvus_client = await get_milvus_client()
-
-    # 2. 调用混合检索
-    query = "我是谁"
-    user_id = 1  # 用户ID
-
-    results = await milvus_client.hybrid_retrieval_memories(
-        query=query,
-        user_id=user_id,
-        summary_k=2,  # 摘要记忆取1条
-        semantic_k=3,  # 语义记忆取3条
-        episodic_k=2,  # 情景记忆取2条
-        procedural_k=3,  # 程序记忆取2条
+async def test_resolve_conflicts():
+    """测试冲突检测 - 全部重复的情况"""
+    
+    # 每个测试函数独立创建客户端
+    client = await get_milvus_client()
+    
+    # 测试数据 - 这些在库中都已经存在，应该全部被删除
+    filtered_memory = {
+        "summary": {
+            "content": "用户Dreamt首次自我介绍并要求被记住，随后询问AI是否记得过往对话，AI表示无历史记录但会保存本次互动。用户请求查询知识库中关于个人所得税计算方法的信息，AI提供了详细的应纳税所得额公式、七级超额累进税率表及计算示例。接着用户询问当前时间，AI说明无法获取实时时间。用户再次确认对话历史，AI总结了本次已发生的四轮交互。随后用户询问如何学习LangChain，AI虽称知识库无相关资料，但仍基于通用知识给出了包含前置基础、核心概念、学习资源和实践建议的完整学习路径。最后用户问及'Claude Code'，AI澄清该术语非官方名称，并列举三种可能含义：Claude模型的代码能力、通过API调用其编程功能、或名称混淆，同时表示知识库无此专有文档。",
+            "importance_score": 0.8
+        },
+        "semantic_memory": [
+            {"content": "用户名为Dreamt，希望被AI记住身份信息 | 检索关键词: 用户身份,Dreamt", "importance_score": 0.9},
+        ],
+        "episodic_memory": [
+            {"content": "2026-04-12: 用户Dreamt首次自我介绍并要求被记住，随后多次询问是否记得过往对话，AI回应无历史记录但会保存本次互动 | 背景: 用户试图建立长期记忆上下文 | AI行动: 明确告知无历史数据，但记录用户身份及本次关键问题（个税计算、LangChain学习、Claude Code含义） | 结果: 用户获得所需知识解答，并确认AI已记录其身份 | 经验教训: 新用户初次交互时需主动声明身份并明确记忆需求，系统应优先固化用户标识", "importance_score": 0.8}
+        ],
+        "procedural_memory": [
+            {"content": "当用户询问非标准或模糊技术术语（如'Claude Code'）时，可以：1. 首先确认该术语是否为官方或广泛认可名称；2. 若否，则列举2-3种最可能的合理解释（如指代模型能力、API功能、名称混淆等）；3. 明确说明知识库中是否存在相关专有文档；4. 邀请用户提供更多上下文以进一步澄清 | 成功案例: 对'Claude Code'的三种可能性解释帮助用户定位真实意图 | 注意事项: 避免直接回答'不知道'，而应提供可验证的推测路径 | 检索关键词: 模糊术语澄清,技术名词解析", "importance_score": 0.8}
+        ]
+    }
+    
+    print("=" * 60)
+    print("测试1: 全部记忆都与库中重复")
+    print("=" * 60)
+    print(f"冲突检测前: summary存在, semantic:2条, episodic:1条, procedural:1条")
+    
+    result = await client.resolve_conflicts(filtered_memory, user_id=1)
+    
+    print(f"冲突检测后: summary={'空' if not result['summary'] else '存在'}, semantic:{len(result['semantic_memory'])}条, episodic:{len(result['episodic_memory'])}条, procedural:{len(result['procedural_memory'])}条")
+    
+    # 验证
+    all_cleared = (
+        result["summary"] == {} and
+        len(result["semantic_memory"]) == 0 and
+        len(result["episodic_memory"]) == 0 and
+        len(result["procedural_memory"]) == 0
     )
+    
+    if all_cleared:
+        print("✅ 全部重复记忆已被清除")
+    else:
+        print("❌ 预期全部清除，但部分记忆未被清除")
+        if result["summary"]:
+            print("   - summary 未被清空")
+        if len(result["semantic_memory"]) > 0:
+            print(f"   - semantic_memory 剩余 {len(result['semantic_memory'])} 条")
+        if len(result["episodic_memory"]) > 0:
+            print(f"   - episodic_memory 剩余 {len(result['episodic_memory'])} 条")
+        if len(result["procedural_memory"]) > 0:
+            print(f"   - procedural_memory 剩余 {len(result['procedural_memory'])} 条")
+    
+    print()
+    return result
 
-    # 3. 打印结果
-    print("=" * 50)
-    print(f"查询: {query}")
-    print(f"用户ID: {user_id}")
-    print("=" * 50)
 
-    for mem_type, memories in results.items():
-        print(f"\n【{mem_type.upper()}】类型记忆 (共{len(memories)}条):")
-        for i, mem in enumerate(memories, 1):
-            print(f"  {i}. 内容: {mem.get('content', 'N/A')[:50]}...")
-            print(f"     评分: {mem.get('score', 'N/A'):.4f}")
-            print(f"     最后访问: {mem.get('last_access_at', 'N/A')}")
-            if mem.get("summary_id"):
-                print(f"     摘要ID: {mem['summary_id']}")
-            print()
+async def test_no_conflicts():
+    """测试：全新记忆，无冲突"""
+    
+    client = await get_milvus_client()
+    
+    # 全新的记忆，库中应该没有
+    filtered_memory = {
+        "summary": {
+            "content": "这是一个全新的对话摘要，之前从未在库中出现过，内容是关于测试的",
+            "importance_score": 0.7
+        },
+        "semantic_memory": [
+            {"content": "Python 3.13 将于2025年发布，新增了一些特性", "importance_score": 0.8},
+        ],
+        "episodic_memory": [
+            {"content": "2026-04-12: 用户测试全新的对话内容，没有任何重复", "importance_score": 0.7},
+        ],
+        "procedural_memory": [
+            {"content": "当用户提出全新问题时，可以给出创新性的回答", "importance_score": 0.7},
+        ]
+    }
+    
+    print("=" * 60)
+    print("测试2: 全新记忆，无冲突")
+    print("=" * 60)
+    print(f"冲突检测前: summary存在, semantic:1条, episodic:1条, procedural:1条")
+    
+    result = await client.resolve_conflicts(filtered_memory, user_id=1)
+    
+    print(f"冲突检测后: summary={'存在' if result['summary'] else '空'}, semantic:{len(result['semantic_memory'])}条, episodic:{len(result['episodic_memory'])}条, procedural:{len(result['procedural_memory'])}条")
+    
+    all_kept = (
+        result["summary"] and
+        len(result["semantic_memory"]) == 1 and
+        len(result["episodic_memory"]) == 1 and
+        len(result["procedural_memory"]) == 1
+    )
+    
+    if all_kept:
+        print("✅ 无冲突时所有记忆都被保留")
+    else:
+        print("❌ 预期全部保留，但部分记忆被误删")
+        if not result["summary"]:
+            print("   - summary 被误清空")
+        if len(result["semantic_memory"]) != 1:
+            print(f"   - semantic_memory 剩余 {len(result['semantic_memory'])} 条")
+        if len(result["episodic_memory"]) != 1:
+            print(f"   - episodic_memory 剩余 {len(result['episodic_memory'])} 条")
+        if len(result["procedural_memory"]) != 1:
+            print(f"   - procedural_memory 剩余 {len(result['procedural_memory'])} 条")
+    
+    print()
 
 
-# 运行
+async def main():
+    """主函数：依次运行测试"""
+    try:
+        await test_resolve_conflicts()
+    except Exception as e:
+        print(f"测试1失败: {e}")
+    
+    try:
+        await test_no_conflicts()
+    except Exception as e:
+        print(f"测试2失败: {e}")
+
+
 if __name__ == "__main__":
-    asyncio.run(example_hybrid_retrieval_memories())
+    print("\n🚀 开始测试冲突检测功能\n")
+    asyncio.run(main())

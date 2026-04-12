@@ -30,33 +30,31 @@ async def get_memory(
     runtime: ToolRuntime[ContextSchema],
 ) -> str:
     """
-    功能：根据用户输入问题类型，动态决策从记忆库中召回的各类记忆的最佳数量，用于辅助后续问题回答。
+    检索用户长期记忆，用于个性化回答和历史连贯性。
 
-    决策逻辑：
-    - 语义记忆（semantic_k）：事实、概念、知识定义。事实性问题（是什么/定义）取3-5条，历史回忆取1-2条。
-    - 情节记忆（episodic_k）：历史事件、过往对话、用户行为记录。重复提问/历史回忆取3-5条，事实性问题取2-3条，操作性问题取1-2条。
-    - 程序记忆（procedural_k）：方法流程、技能步骤、处理策略。操作性问题/重复困惑取2-3条，事实性问题取2-3条，历史回忆取1-2条。
+    【调用时机】满足以下任一条件即调用：
+    - 用户提到之前、刚才、上次等回忆性词汇
+    - 重复提问或用户表现困惑
+    - 询问操作步骤、个人偏好、习惯设置
+    - 任何需要记住历史对话的场景
 
-    取值范围：0-5
-    - 0：不需要该类记忆
-    - 1-2：辅助参考
-    - 3-5：核心依赖
-    - 6-10：极少使用（仅当问题明确需要大量历史遍历时）
+    【参数决策】（k值 0-5，0=不需要，3-5=核心依赖）
+    - semantic_k（事实/概念）：事实问答3-5，操作问题2-3，历史回忆1-2
+    - episodic_k（历史/对话）：重复提问/回忆3-5，事实问答2-3，操作问题1-2
+    - procedural_k（步骤/方法）：操作问题3-5，事实问答2-3，历史回忆1-2
 
     Args:
-        query: 用户输入的问题
-        semantic_k: 语义记忆召回数量。适用于概念解释、知识问答、事实确认。一般问题1-3条。
-        episodic_k: 情节记忆召回数量。适用于回顾历史、追踪用户行为、重复问题检测。一般问题1-3条。
-        procedural_k: 程序记忆召回数量。适用于操作指南、步骤说明、策略复用。技术/操作类问题1-2条。
-
-    Returns:
-        包含相关记忆片段字典的说明文字，每个字典内的列表包含对应数量的记忆片段，每个记忆片段包含记忆类型、记忆内容、最后访问时间、摘要ID 4个字段。
+        query: 用户原始问题（如需了解记忆详情可做适当改写）
+        semantic_k: 语义记忆召回数量
+        episodic_k: 情节记忆召回数量
+        procedural_k: 程序记忆召回数量
     """
     logger.info(f"{'---'*20}开始检索记忆hybrid_retrieval_memories{'---'*20}")
     logger.info(f"ai希望检索的各种记忆数量: 语义记忆{semantic_k}, 情节记忆{episodic_k}, 程序记忆{procedural_k}")
     user_id = runtime.context.user_id
     writer = get_stream_writer()
     writer(f"🔍 正在检索记忆库...")
+    start_time = time.time()
     milvus_client = await get_milvus_client()
     memories_dict = await milvus_client.hybrid_retrieval_memories(
         query,
@@ -66,6 +64,7 @@ async def get_memory(
         episodic_k=episodic_k,
         procedural_k=procedural_k,
     )
+    writer(f"🔍 检索到{len(memories_dict)}条记忆，耗时{time.time() - start_time:.2f}秒")
     now = int(time.time())
     memories_text = config.MEMORY_USAGE_PROMPT.format(
         memories_dict=memories_dict,
@@ -112,7 +111,7 @@ async def search_knowledge_base(
     if not parent_chunkId_list:
         writer("⚠️ 未检索到相关文档，请尝试更换关键词或稍后再试。")
         logger.info(f"{'---'*20}未检索到相关文档{'---'*20}")
-        return []
+        return "未检索到相关文档"
 
     # 使用全局 PostgreSQL 客户端
     postgresql_client = await get_postgresql_client()
@@ -149,9 +148,23 @@ async def search_knowledge_base(
     writer(f"✓ 检索完成，本次检索耗时{end_time - start_time:.2f}秒")
     logger.info(f"{'---'*20}检索完成{'---'*20}")
 
-    related_documents = f"检索到的相关文档如下：\n{related_documents}"
-    return related_documents
-
+    # 确保 related_documents 转换为字符串
+    if isinstance(related_documents, list):
+        if not related_documents:
+            return "未检索到相关文档"
+        # 将列表中的每个文档转换为字符串
+        doc_strings = []
+        for doc in related_documents:
+            if hasattr(doc, 'text'):
+                doc_strings.append(doc.text)
+            else:
+                doc_strings.append(str(doc))
+        documents_text = "\n---\n".join(doc_strings)
+    else:
+        documents_text = str(related_documents)
+    
+    related_documents_result = f"检索到的相关文档如下：\n{documents_text}"
+    return related_documents_result
 
 """rerank_result的结构示例：
 {'output': {'results': [{'document': {'text': '20 世纪80 年代末'}, 'index': 0, 

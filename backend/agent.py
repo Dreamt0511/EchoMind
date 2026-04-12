@@ -65,12 +65,20 @@ search_knowledge_limit = ToolCallLimitMiddleware(
 
 # 动态系统系统提示词切换，根据知识库id切换系统提示词
 @dynamic_prompt
-def dynamic_prompt(request: ModelRequest) -> str:
+async def dynamic_prompt(request: ModelRequest) -> str:
     knowledge_base_id = request.runtime.context.knowledge_base_id
+    user_id = request.runtime.context.user_id
+
+    #注入用户画像（用户画像会随着对话的更新而更新，准确的说是在后台任务提取用户画像后更新）
+    postgresql_client = await get_postgresql_client()
+    user_profile = await postgresql_client.get_user_profile(user_id)
+    SYSTEM_PROMPT_DEFAULT = config.SYSTEM_PROMPT_DEFAULT.format(user_profile=user_profile)
+    SYSTEM_PROMPT_SPECIFIC = config.SYSTEM_PROMPT_SPECIFIC.format(user_profile=user_profile)
+
     if knowledge_base_id == "默认知识库":
-        return config.SYSTEM_PROMPT_DEFAULT
+        return SYSTEM_PROMPT_DEFAULT
     else:
-        return config.SYSTEM_PROMPT_SPECIFIC
+        return SYSTEM_PROMPT_SPECIFIC
 
 
 async def stream_agent_response(

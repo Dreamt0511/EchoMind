@@ -860,6 +860,7 @@ class PostgreSQLParentClient:
                 )
                 
                 if row:
+                    logger.info("系统进行了一次用户画像查询")
                     return row["user_profile"]
                 return None
 
@@ -1000,7 +1001,7 @@ async def reset_summary_id_to_null(user_id: Optional[int] = None):
 
 if __name__ == "__main__":
     # 重置用户ID=1的所有记录的summary_id为NULL（调试用，用于auto_summrize_psql_message设置summary_id后的重置）
-    #asyncio.run(reset_summary_id_to_null(1))
+    asyncio.run(reset_summary_id_to_null(1))
 
     # 查看对话历史记录（用户ID=1），100条
-    asyncio.run(test_query_by_user(1))
+    #asyncio.run(test_query_by_user(1))
