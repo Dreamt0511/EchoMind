@@ -51,8 +51,8 @@ class AsyncMilvusClientWrapper:
         )
         self.client = AsyncMilvusClient(
             # uri=os.getenv("Milvus_url"),
-            uri="https://in03-bf51824a0cbc1a5.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn",
-            token="83929fadec379ce1d9acd2d3b1707f515fc2677410f020b564e4b6d2c4157c5311c12a77e10a3485b147f127c21e4dab19926475",
+            uri=os.getenv("Milvus_url"),
+            token=os.getenv("Token"),
         )
         self.dense_dim = int(os.getenv("dense_dimension", "1024"))
         self._collection_initialized = False
@@ -484,7 +484,8 @@ class AsyncMilvusClientWrapper:
                         if memory_id and memory_id not in seen_ids:
                             seen_ids.add(memory_id)
                             memories.append(
-                                {
+                                {   
+                                    "id": memory_id,#这里的id是记忆的id，方便后续更新记忆的last_access_at时使用
                                     "memory_type": entity.get("memory_type"),
                                     "content": entity.get("content"),
                                     "summary_id": entity.get("summary_id"),
@@ -571,29 +572,59 @@ class AsyncMilvusClientWrapper:
                     if mem_type in final_results:
                         final_results[mem_type].extend(memories)
 
+        #获取到每种类型的前k条记忆，k是配置文件中指定的
         top_k_memories = self.get_the_top_k_memories(
             memory_dict=final_results,
             memory_configs=memory_configs,
         )
 
+        #更新记忆的最后访问时间，模拟记忆的自然更新与衰减效果（最近访问的记忆更容易被检索到，长期未被访问的记忆慢慢衰减）
+        await self.update_memory_last_access_time(top_k_memories)
+
         return top_k_memories
         """
         返回的结构类似下面这样
         {
-        "summary": [
+        "summary": 
             {
+                "id": "mem_001",#这里的id是记忆的id，方便后续更新记忆的last_access_at时使用
                 "memory_type": "summary",
                 "content": "用户喜欢喝美式咖啡，不加糖",
                 "summary_id": "sum_001",或者None
                 "last_access_at": 1734019200.0,  # 时间戳
             },
-        ],
         "semantic": [],
         "episodic": [],
         "procedural": [],
         }
         """
 
+    async def update_memory_last_access_time(self, top_k_memories: Dict[str, List[Dict]]):
+        """
+        更新记忆的最后访问时间（方便以后检索时判断时近性，模拟记忆的衰减）
+        """
+        current_timestamp = int(time.time())
+        update_data = []
+
+        for mem_type, memories in top_k_memories.items():
+            for mem in memories:
+                # 建议修改 get_the_top_k_memories 的返回内容，增加 "id" 字段
+                if "id" in mem:
+                    update_data.append({
+                        "id": mem["id"],
+                        "last_access_at": current_timestamp
+                    })
+
+        # 执行批量更新（合并模式）
+        if update_data:
+            res = await self.client.upsert(
+                collection_name=self.memory_collection,
+                data=update_data,
+                partial_update=True  # 关键参数，启用合并模式
+            )
+            print(f"更新记忆访问时间结果: {res}")
+
+    #检索每种记忆类型的前k条记录，根据alpha, beta, gamma权重排序对应语义相关性、时间新鲜度、重要性权重，最后乘以每种记忆类型的权重type_weights
     def get_the_top_k_memories(
         self,
         memory_dict: Dict[str, List[Dict]],
@@ -650,7 +681,7 @@ class AsyncMilvusClientWrapper:
 
                 # 2. 时间新鲜度（基于最后访问时间）
                 last_access = mem.get("last_access_at", current_time)
-                hours_passed = (current_time - last_access) / 3600
+                hours_passed = (current_time - last_access) / 3600#注意这里是last_access_at即最后一次访问的时间戳，不是创建时间戳
                 recency_score = DECAY_RATE**hours_passed
 
                 # 3. 重要性评分
@@ -684,6 +715,7 @@ class AsyncMilvusClientWrapper:
             ]
 
         return result
+
 
     async def hybrid_retrieval_knowledge_base(
         self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 5
@@ -878,7 +910,7 @@ class AsyncMilvusClientWrapper:
             )
             # 返回每个记忆是否相似
             return [
-                results and results[i] and results[i][0]["distance"] >= 0.85  # 0.85 是一个经验值，根据需要调整
+                results and results[i] and results[i][0]["distance"] >= 0.9  # 0.9 是一个经验值，根据需要调整
                 for i in range(len(type_items))
             ]
 
@@ -1157,7 +1189,25 @@ async def main():
     except Exception as e:
         print(f"测试2失败: {e}")
 
+async def test_update_access_time():
+    """测试：更新记忆访问时间"""
+    client = await get_milvus_client()
+    test_memory = {
+        "semantic": [
+            {
+                "id": "465201081576108611",#这里的id是记忆的id，方便后续更新记忆的last_access_at时使用
+                "memory_type": "semantic",
+                "content": "用户喜欢喝美式咖啡",
+                "summary_id": None,
+                "last_access_at": time.time(),  # 时间戳
+            },
+        ]
+        }
+    await client.update_memory_last_access_time(test_memory)
 
 if __name__ == "__main__":
-    print("\n🚀 开始测试冲突检测功能\n")
-    asyncio.run(main())
+    #print("\n🚀 开始测试冲突检测功能\n")
+    #asyncio.run(main())
+    print("开始更新记忆访问时间")
+    asyncio.run(test_update_access_time())
+    

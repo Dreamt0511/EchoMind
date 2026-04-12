@@ -15,11 +15,11 @@ async def ensure_database_exists(dsn: str) -> None:
     """确保数据库存在，不存在则自动创建"""
 
     # 直接使用参数，不依赖 DSN 解析
-    user = "dreamt"
-    password = "0511"
-    host = "localhost"
-    port = 5432
-    db_name = "echomind_db"
+    user = os.getenv("user")
+    password = os.getenv("password")
+    host = os.getenv("host")
+    port = int(os.getenv("port"))
+    db_name = os.getenv("db_name")
 
     try:
         conn = await asyncpg.connect(

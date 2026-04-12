@@ -930,7 +930,7 @@ with st.sidebar:
                     </div>
                     <div class="tooltip-divider"></div>
                     <div class="tooltip-content">
-                        我具备<span style="color:#ffd700; font-weight:600;">长期记忆能力</span>，后台自动提取记忆<br>能够记住我们过往的所有交互历史哦
+                        我具备<span style="color:#ffd700; font-weight:600;">长期记忆能力</span>，后台自动整理记忆<br>我能够记住我们过往的所有交互历史哦
                     </div>
                     <div class="tooltip-tag">知识库管理</div>
                     <div class="tooltip-tag">长期记忆</div>
@@ -1128,7 +1128,7 @@ chat_container = st.container()
 with chat_container:
     if not st.session_state.chat_history:
         if st.session_state.knowledge_bases:
-            st.info("你好！我是 EchoMind AI 助手。选择默认知识库时：结合知识库发散回答；选择指定知识库时：仅按库内内容作答。")
+            st.info("选择默认知识库时：AI将搜索所有知识库内容进行发散回答。选择指定知识库时：仅按库内内容作答。")
     else:
         for chat in st.session_state.chat_history:
             st.markdown(render_message(chat["role"], chat["content"], chat["timestamp"]), unsafe_allow_html=True)
