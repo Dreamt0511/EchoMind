@@ -42,7 +42,35 @@ def load_css():
             css_content = f.read()
     return f"<style>{css_content}</style>"
 
+def add_sidebar_collapse_listener():
+        """监听侧边栏折叠，隐藏机器人图标"""
+        return """
+        <script>
+        function toggleRobotVisibility() {
+            const sidebar = document.querySelector('[data-testid="stSidebar"]');
+            const robot = document.querySelector('.robot-icon-container');
+            if (!sidebar || !robot) return;
+            
+            // 检查侧边栏是否折叠（宽度小于50px表示折叠）
+            const isCollapsed = sidebar.offsetWidth < 50;
+            robot.style.display = isCollapsed ? 'none' : '';
+        }
+        
+        // 初始检查
+        setTimeout(toggleRobotVisibility, 100);
+        
+        // 监听窗口大小变化和侧边栏变化
+        const observer = new MutationObserver(toggleRobotVisibility);
+        const sidebar = document.querySelector('[data-testid="stSidebar"]');
+        if (sidebar) {
+            observer.observe(sidebar, { attributes: true, childList: true, subtree: true });
+        }
+        window.addEventListener('resize', toggleRobotVisibility);
+        </script>
+        """
 st.markdown(load_css(), unsafe_allow_html=True)
+st.markdown(add_sidebar_collapse_listener(), unsafe_allow_html=True)
+
 
 # 后端API地址
 API_BASE_URL = "http://localhost:8000"
@@ -1254,3 +1282,5 @@ if st.session_state.knowledge_bases:
             type="primary"
         )
     st.markdown('</div>', unsafe_allow_html=True)
+
+    

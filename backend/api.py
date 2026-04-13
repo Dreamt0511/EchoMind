@@ -402,7 +402,7 @@ async def delete_file(
 
         # 2. PostgreSQL 删除成功，继续删除 Milvus 中的子块
         try:
-            deleted_child_count = await milvus_client.delete_flie_chunks(
+            deleted_child_count = await milvus_client.delete_file_chunks(
                 knowledge_base_id=knowledge_base_id,
                 file_hash=file_hash,
                 user_id=user_id,

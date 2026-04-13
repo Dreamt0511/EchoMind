@@ -680,7 +680,7 @@ footer {
 /* ========== 侧边栏头部样式 ========== */
 .main-header {
     position: relative;
-    top: -30px;
+    top: 0; /* 修复：移除负 offset，避免侧边栏折叠时机器人溢出显示 */
 }
 .header-container {
     height: 170px;
@@ -795,7 +795,7 @@ button[data-testid="baseButton-secondary"][key="clear_history_btn"]:hover {
 /* 让侧边栏允许子元素溢出（关键！） */
 [data-testid="stSidebar"],
 [data-testid="stSidebar"] > div:first-child {
-    overflow: visible !important;
+    overflow: visible !important; /* 必须 visible，否则鼠标 hover 不到弹出的提示框 */
 }
 
 /* 机器人容器相对定位，允许溢出 */
@@ -912,4 +912,39 @@ button[data-testid="baseButton-secondary"][key="clear_history_btn"]:hover {
         border-bottom: 12px solid rgba(102, 126, 234, 0.95);
         border-top: none;
     }
+}
+/* ==========================================
+   强制侧边栏滚动（追加）
+   ========================================== */
+
+/* 强制侧边栏滚动 */
+section[data-testid="stSidebar"] > div:first-child {
+    max-height: 100vh;
+    overflow-y: auto !important;
+    overflow-x: hidden;
+}
+
+/* 美化滚动条 */
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar {
+    width: 6px;
+}
+
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 3px;
+}
+
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* 确保知识库列表区域可滚动 */
+.stSidebar .stExpander {
+    max-height: none !important;
+    overflow: visible !important;
 }

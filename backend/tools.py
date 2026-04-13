@@ -64,7 +64,28 @@ async def get_memory(
         episodic_k=episodic_k,
         procedural_k=procedural_k,
     )
-    writer(f"🔍 检索到{len(memories_dict)}条记忆，耗时{time.time() - start_time:.2f}秒")
+    """
+        返回的结构类似下面这样
+        {
+        "summary": 
+            {
+                "id": "mem_001",#这里的id是记忆的id，方便后续更新记忆的last_access_at时使用
+                "memory_type": "summary",
+                "content": "用户喜欢喝美式咖啡，不加糖",
+                "summary_id": "sum_001",或者None
+                "last_access_at": 1734019200.0,  # 时间戳
+            },
+        "semantic": [],
+        "episodic": [],
+        "procedural": [],
+        }
+        """
+    count = 1
+    for memory in memories_dict.values():
+        if isinstance(memory, list):
+            count += len(memory)
+        
+    writer(f"🔍 检索到{count}条记忆，耗时{time.time() - start_time:.2f}秒")
     now = int(time.time())
     memories_text = config.MEMORY_USAGE_PROMPT.format(
         memories_dict=memories_dict,

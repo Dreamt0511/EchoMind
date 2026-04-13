@@ -268,7 +268,7 @@ async def _store_memories(
             "filtered_message_ids": list
         }
     """
-    # 检测冲突记忆（删除相似度高于0.85的记忆）
+    # 检测冲突记忆（删除相似度高于0.9的记忆）
     filtered_memory = await milvus_client.resolve_conflicts(
         filtered_memory=filtered_memory, user_id=user_id
     )

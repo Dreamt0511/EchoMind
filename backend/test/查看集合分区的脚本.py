@@ -1,9 +1,16 @@
 import asyncio
 from pymilvus import AsyncMilvusClient
+import os
+import dotenv
+
+# 加载环境变量
+dotenv.load_dotenv()
+
+Token = os.getenv("Token")
 
 # ===================== 你的 Milvus 配置 =====================
 MILVUS_URI = "https://in03-bf51824a0cbc1a5.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-MILVUS_TOKEN = "83929fadec379ce1d9acd2d3b1707f515fc2677410f020b564e4b6d2c4157c5311c12a77e10a3485b147f127c21e4dab19926475"
+MILVUS_TOKEN = Token
 # ==========================================================
 
 async def check_partitions():
