@@ -913,38 +913,3 @@ button[data-testid="baseButton-secondary"][key="clear_history_btn"]:hover {
         border-top: none;
     }
 }
-/* ==========================================
-   强制侧边栏滚动（追加）
-   ========================================== */
-
-/* 强制侧边栏滚动 */
-section[data-testid="stSidebar"] > div:first-child {
-    max-height: 100vh;
-    overflow-y: auto !important;
-    overflow-x: hidden;
-}
-
-/* 美化滚动条 */
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar {
-    width: 6px;
-}
-
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 3px;
-}
-
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb {
-    background: #888;
-    border-radius: 3px;
-}
-
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb:hover {
-    background: #555;
-}
-
-/* 确保知识库列表区域可滚动 */
-.stSidebar .stExpander {
-    max-height: none !important;
-    overflow: visible !important;
-}

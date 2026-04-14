@@ -208,13 +208,12 @@ class KnowledgeBaseManager:
         self, query: str, knowledge_base_id: str, user_id: int, top_k: int = 5
     ) -> List[str]:
         """混合检索，返回去重后的父块 ID 列表，混合检索失败时自动降级为稠密向量检索"""
-
+        
         # 构建过滤表达式
         if knowledge_base_id == "默认知识库":
             filter_expr = f"user_id == {user_id}"
         else:
             filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
-
         # 生成稠密向量，带重试机制
         dense_vector = await self.get_dense_vector(query)
         if not dense_vector:
@@ -246,7 +245,6 @@ class KnowledgeBaseManager:
                 limit=top_k * 3,
                 output_fields=["parent_id"],
             )
-
             # 返回去重后的父块 ID 列表
             return list(set([hit["entity"]["parent_id"] for hit in results[0]]))
         except Exception as e:

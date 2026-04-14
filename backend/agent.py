@@ -7,14 +7,14 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 import config
 from typing import AsyncGenerator
-from tools import search_knowledge_base, get_memory
+from tools import search_knowledge_base, get_memory, get_raw_conversation_by_summary_id
 import json
 from schemas import ContextSchema
 from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     dynamic_prompt,
     ModelRequest,
-    SummarizationMiddleware
+    SummarizationMiddleware,
 )
 from fastapi import BackgroundTasks
 from postgresql_client import get_postgresql_client
@@ -52,10 +52,16 @@ summarize_model = ChatOpenAI(
     model=os.getenv("SUMMARIZATION_MODEL", "qwen-turbo"),
     openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
     openai_api_base=os.getenv("BASE_URL"),
-    temperature=0.2#总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
-    )
+    temperature=0.2,  # 总结模型温度，控制总结对话的随机性，0-1之间，0越确定，1越随机
+)
 
 """=============中间件============="""
+# 限制记忆检索最多 1 次
+memory_limit = ToolCallLimitMiddleware(
+    tool_name="get_memory",
+    run_limit=1,  # 单次对话最多检索 1 次记忆
+)
+
 # 单次提问最多调用2次search_knowledge_base工具
 search_knowledge_limit = ToolCallLimitMiddleware(
     tool_name="search_knowledge_base",
@@ -69,11 +75,15 @@ async def dynamic_prompt(request: ModelRequest) -> str:
     knowledge_base_id = request.runtime.context.knowledge_base_id
     user_id = request.runtime.context.user_id
 
-    #注入用户画像（用户画像会随着对话的更新而更新，准确的说是在后台任务提取用户画像后更新）
+    # 注入用户画像（用户画像会随着对话的更新而更新，准确的说是在后台任务提取用户画像后更新）
     postgresql_client = await get_postgresql_client()
     user_profile = await postgresql_client.get_user_profile(user_id)
-    SYSTEM_PROMPT_DEFAULT = config.SYSTEM_PROMPT_DEFAULT.format(user_profile=user_profile)
-    SYSTEM_PROMPT_SPECIFIC = config.SYSTEM_PROMPT_SPECIFIC.format(user_profile=user_profile)
+    SYSTEM_PROMPT_DEFAULT = config.SYSTEM_PROMPT_DEFAULT.format(
+        user_profile=user_profile
+    )
+    SYSTEM_PROMPT_SPECIFIC = config.SYSTEM_PROMPT_SPECIFIC.format(
+        user_profile=user_profile
+    )
 
     if knowledge_base_id == "默认知识库":
         return SYSTEM_PROMPT_DEFAULT
@@ -97,18 +107,23 @@ async def stream_agent_response(
         # 创建agent
         agent = create_agent(
             model=model,
-            tools=[search_knowledge_base, get_memory],
+            tools=[
+                search_knowledge_base,
+                get_memory,
+                get_raw_conversation_by_summary_id,
+            ],
             context_schema=ContextSchema,
             checkpointer=checkpointer,
             middleware=[
+                memory_limit,
                 search_knowledge_limit,
                 dynamic_prompt,
-                SummarizationMiddleware(#对于异步运行方式，总结对话中间件会在 每次调用模型之前 执行，所以不用担心对话没被保存进psql
+                SummarizationMiddleware(  # 对于异步运行方式，总结对话中间件会在 每次调用模型之前 执行，所以不用担心对话没被保存进psql
                     model=summarize_model,
                     trigger=("tokens", 4000),
                     keep=("messages", 20),
                 ),
-            ]
+            ],
         )
 
         # 组装AI回复
@@ -182,13 +197,14 @@ async def save_conversation_messages(
             user_id=user_id, thread_id=thread_id, role="human", content=user_message
         )
 
-
         # 保存 AI回复
         await postgresql_client.add_conversation_message(
             user_id=user_id, thread_id=thread_id, role="ai", content=ai_message
         )
 
-        logger.info(f"[postgresql] 对话已保存: user_id={user_id}, thread_id={thread_id}")
+        logger.info(
+            f"[postgresql] 对话已保存: user_id={user_id}, thread_id={thread_id}"
+        )
 
     except Exception as e:
         logger.error(f"保存对话失败: {e}")

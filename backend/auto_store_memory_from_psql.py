@@ -21,8 +21,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Token 阈值,debug下设置成600，生产下设置成2000
-TOKEN_THRESHOLD = 500  # 中间件压缩的是4000token
+TOKEN_THRESHOLD = 4000  # 中间件压缩的是4000token
 MEMORY_EXTRACT_PROMPT = config.MEMORY_EXTRACT_PROMPT
 USER_PROFILE_MERGE_PROMPT = config.USER_PROFILE_MERGE_PROMPT
 

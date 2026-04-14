@@ -21,6 +21,48 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@tool("get_raw_conversation_by_summary_id")
+async def get_raw_conversation_by_summary_id(
+    summary_id: str,
+    runtime: ToolRuntime[ContextSchema]
+) -> str:
+    """
+    获取指定摘要ID对应的完整原始对话记录。
+    
+    该工具返回按时间顺序排列的原始对话文本，包含每条消息的时间戳、角色和完整内容。
+    
+    适用场景：
+    - 摘要内容不够详细，需要查看完整的对话细节
+    - 用户明确要求查看原始对话记录
+    - 需要对对话内容进行精确分析、引用或二次处理
+    - 摘要中遗漏了关键信息，需要补充上下文
+    
+    注意：
+    - 只能在获取到对应摘要summary_id后调用，确保摘要存在且已压缩
+    - 原始对话可能较长，调用前应评估是否需要完整内容
+    - 仅在摘要无法满足需求时调用，避免不必要的开销
+    - 返回格式：[时间戳] 角色: 消息内容
+    
+    Args:
+        summary_id: 摘要ID，用于标识需要检索的对话摘要
+
+    Returns:
+        str: 格式化的原始对话文本，每条消息独立成行，包含时间戳、角色和内容
+    """
+    user_id = runtime.context.user_id
+    postgresql_client = await get_postgresql_client()
+    writer = get_stream_writer()
+    writer(f"🔍 正在检索原始对话...")
+    start_time = time.time()
+    raw_conversation = await postgresql_client.get_raw_conversation_by_summary_id(
+        summary_id=summary_id,
+        user_id=user_id,
+        thread_id=f"{user_id}"
+    )
+    writer(f"🔍 原始对话检索完成，耗时{time.time() - start_time:.2f}秒")
+    return raw_conversation
+
+
 @tool("get_memory")
 async def get_memory(
     query: str,
@@ -30,7 +72,7 @@ async def get_memory(
     runtime: ToolRuntime[ContextSchema],
 ) -> str:
     """
-    检索用户长期记忆，用于个性化回答和历史连贯性。
+    检索用户长期记忆，用于个性化回答、事实验证和历史连贯性。
 
     【调用时机】满足以下任一条件即调用：
     - 用户提到之前、刚才、上次等回忆性词汇
@@ -44,7 +86,7 @@ async def get_memory(
     - procedural_k（步骤/方法）：操作问题3-5，事实问答2-3，历史回忆1-2
 
     Args:
-        query: 用户原始问题（如需了解记忆详情可做适当改写）
+        query: 用户原始问题（如果过于模糊或口语化可做适当改写）
         semantic_k: 语义记忆召回数量
         episodic_k: 情节记忆召回数量
         procedural_k: 程序记忆召回数量
@@ -64,22 +106,6 @@ async def get_memory(
         episodic_k=episodic_k,
         procedural_k=procedural_k,
     )
-    """
-        返回的结构类似下面这样
-        {
-        "summary": 
-            {
-                "id": "mem_001",#这里的id是记忆的id，方便后续更新记忆的last_access_at时使用
-                "memory_type": "summary",
-                "content": "用户喜欢喝美式咖啡，不加糖",
-                "summary_id": "sum_001",或者None
-                "last_access_at": 1734019200.0,  # 时间戳
-            },
-        "semantic": [],
-        "episodic": [],
-        "procedural": [],
-        }
-        """
     count = 1
     for memory in memories_dict.values():
         if isinstance(memory, list):

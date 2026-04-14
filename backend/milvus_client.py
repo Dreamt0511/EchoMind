@@ -8,7 +8,6 @@ from memory_manager import MemoryManager
 from knowledeg_base_manager import KnowledgeBaseManager
 
 
-
 logger = logging.getLogger(__name__)
 
 # 加载环境变量
@@ -58,7 +57,6 @@ class AsyncMilvusClientWrapper:
 
         self._singleton_initialized = True
 
-
         self.memory_manager = MemoryManager(
             client=self.client,
             embeddings=self.embeddings,
@@ -72,8 +70,6 @@ class AsyncMilvusClientWrapper:
             collection_name=self.knowledge_base_collection,
             dense_dim=self.dense_dim,
         )
-
-
 
     async def ensure_collection(self):
         """确保集合已初始化（只在启动时调用一次）"""
@@ -102,19 +98,37 @@ class AsyncMilvusClientWrapper:
             logger.info("Milvus 客户端已关闭")
 
     # ==================== 记忆管理方法代理 ====================
-    async def hybrid_retrieval_memories(self, query: str, user_id: int, summary_k: int,
-                                        semantic_k: int, episodic_k: int, procedural_k: int):
+    async def hybrid_retrieval_memories(
+        self,
+        query: str,
+        user_id: int,
+        summary_k: int,
+        semantic_k: int,
+        episodic_k: int,
+        procedural_k: int,
+    ):
         """混合检索记忆 - 代理到 memory_manager"""
         return await self.memory_manager.hybrid_retrieval_memories(
-            query, user_id, summary_k, semantic_k, episodic_k, procedural_k
+            query=query,
+            user_id=user_id,
+            summary_k=summary_k,
+            semantic_k=semantic_k,
+            episodic_k=episodic_k,
+            procedural_k=procedural_k,
         )
 
     async def resolve_conflicts(self, filtered_memory: dict, user_id: int) -> dict:
         """检测并过滤重复记忆 - 代理到 memory_manager"""
         return await self.memory_manager.resolve_conflicts(filtered_memory, user_id)
 
-    async def add_memories_batch(self, user_id: int, thread_id: str, memory_dict: dict,
-                                  summary_id: str = None, **kwargs) -> bool:
+    async def add_memories_batch(
+        self,
+        user_id: int,
+        thread_id: str,
+        memory_dict: dict,
+        summary_id: str = None,
+        **kwargs
+    ) -> bool:
         """批量添加记忆 - 代理到 memory_manager"""
         return await self.memory_manager.add_memories_batch(
             user_id, thread_id, memory_dict, summary_id, **kwargs
@@ -122,30 +136,37 @@ class AsyncMilvusClientWrapper:
 
     # ==================== 知识库管理方法代理 ====================
 
-    async def hybrid_retrieval_knowledge_base(self, query: str, knowledge_base_id: str,
-                                              top_k: int, user_id: int):
+    async def hybrid_retrieval_knowledge_base(
+        self, query: str, knowledge_base_id: str, top_k: int, user_id: int
+    ):
         """混合检索知识库 - 代理到 knowledge_base_manager"""
         return await self.knowledge_base_manager.hybrid_retrieval_knowledge_base(
-            query, knowledge_base_id, top_k, user_id
+            query=query,
+            knowledge_base_id=knowledge_base_id,
+            top_k=top_k,
+            user_id=user_id,
         )
 
-    async def add_chunks_batch(self, knowledge_base_id: str, chunks, user_id: int) -> bool:
+    async def add_chunks_batch(
+        self, knowledge_base_id: str, chunks, user_id: int
+    ) -> bool:
         """批量添加知识块 - 代理到 knowledge_base_manager"""
         return await self.knowledge_base_manager.add_chunks_batch(
             knowledge_base_id, chunks, user_id
         )
 
-    async def delete_knowledge_file_chunks(self, knowledge_base_id: str, user_id: int) -> bool:
+    async def delete_knowledge_file_chunks(
+        self, knowledge_base_id: str, user_id: int
+    ) -> bool:
         """删除知识库文件块 - 代理到 knowledge_base_manager"""
         return await self.knowledge_base_manager.delete_knowledge_file_chunks(
             knowledge_base_id, user_id
         )
-    
+
     async def delete_file_chunks(
         self, knowledge_base_id: str, file_hash: str, user_id: int
     ):
         """删除知识库文件 - 代理到 knowledge_base_manager"""
         return await self.knowledge_base_manager.delete_file_chunks(
-            knowledge_base_id = knowledge_base_id, file_hash=file_hash, user_id = user_id
+            knowledge_base_id=knowledge_base_id, file_hash=file_hash, user_id=user_id
         )
-

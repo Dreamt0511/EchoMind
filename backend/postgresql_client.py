@@ -809,27 +809,35 @@ class PostgreSQLParentClient:
         except Exception as e:
             logger.error(f"Error adding conversation message: {e}")
             raise
-    
-    async def update_messages_with_summary_id(self, message_ids: List[str], summary_id: str) -> bool:
+
+    async def update_messages_with_summary_id(
+        self, message_ids: List[str], summary_id: str
+    ) -> bool:
         """更新被压缩的消息的 summary_id（后台任务，不抛出异常）"""
         if not message_ids:
             return False
-            
+
         try:
             if not self.pool:
                 logger.error("Connection pool not initialized")
                 return False
-            
+
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE raw_conversations
                         SET summary_id = $1
                         WHERE id = ANY($2::text[])
-                    """, summary_id, message_ids)
-                    logger.info(f"成功更新 {len(message_ids)} 条消息的 summary_id 为 {summary_id}")
+                    """,
+                        summary_id,
+                        message_ids,
+                    )
+                    logger.info(
+                        f"成功更新 {len(message_ids)} 条消息的 summary_id 为 {summary_id}"
+                    )
                     return True
-                    
+
         except Exception as e:
             logger.error(f"更新消息的 summary_id 失败: {e}", exc_info=True)
             return False
@@ -858,7 +866,7 @@ class PostgreSQLParentClient:
                     """,
                     user_id,
                 )
-                
+
                 if row:
                     logger.info("系统进行了一次用户画像查询")
                     return row["user_profile"]
@@ -907,6 +915,77 @@ class PostgreSQLParentClient:
         except Exception as e:
             logger.error(f"更新用户画像失败: {e}")
             return False
+
+    async def get_raw_conversation_by_summary_id(
+        self, summary_id: str, user_id: int, thread_id: str
+    ) -> str:
+        """
+        通过 summary_id 检索对话，并返回格式化的原始对话文本
+
+        Args:
+            summary_id: 摘要ID
+            user_id: 用户ID
+            thread_id: 会话线程ID
+
+        Returns:
+            str: 格式化的对话文本，格式如：
+                [2026-04-13 18:32:17] human: 你好
+                [2026-04-13 18:32:17] ai: 你好，Dreamt！
+                ...
+        """
+        if not self.pool:
+            raise RuntimeError("Connection pool not initialized")
+
+        if not summary_id:
+            return ""
+
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT role, content, created_at
+                    FROM raw_conversations
+                    WHERE summary_id = $1 
+                    AND user_id = $2 
+                    AND thread_id = $3
+                    ORDER BY created_at ASC
+                    """,
+                    summary_id,
+                    user_id,
+                    thread_id,
+                )
+
+                if not rows:
+                    logger.warning(
+                        f"未找到 summary_id={summary_id} 对应的对话 "
+                        f"(user_id={user_id}, thread_id={thread_id})"
+                    )
+                    return f"未找到 summary_id={summary_id} 对应的对话"
+
+                formatted_lines = []
+                for row in rows:
+                    # 格式化时间戳
+                    created_at = row["created_at"]
+                    if hasattr(created_at, "strftime"):
+                        time_str = created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        time_str = str(created_at)
+
+                    # 构建格式化的消息行
+                    formatted_lines.append(
+                        f"[{time_str}] {row['role']}: {row['content']}"
+                    )
+
+                result = f"以下是summary_id={summary_id}对应的原始对话记录:\n" + "\n".join(formatted_lines)
+                logger.info(
+                    f"成功格式化 summary_id={summary_id} 的对话，共 {len(rows)} 条消息"
+                )
+
+                return result
+
+        except Exception as e:
+            logger.error(f"通过 summary_id 检索并格式化对话失败: {e}")
+            return f"通过 summary_id 检索对话失败: {e}"
 
 
 # 测试函数

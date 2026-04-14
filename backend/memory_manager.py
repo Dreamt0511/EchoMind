@@ -15,7 +15,7 @@ load_dotenv()
 
 
 class MemoryManager:
-    """记忆管理器 - 负责记忆的初始化、存储和检索"""
+    """记忆管理器 - 负责记忆的初始化、存储、更新、检索"""
 
     def __init__(
         self,
