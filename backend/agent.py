@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import sys
+import time
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
@@ -28,9 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv(override=True)
+load_dotenv()
 
-REDIS_URI = os.getenv("Redis_URI")
+REDIS_URL = os.getenv("REDIS_URL")
 # 2. 配置 TTL 过期时间（单位：分钟）
 # - default_ttl: 检查点数据保留时间，超过后自动删除
 # - refresh_on_read: 读取时是否刷新TTL，保持活跃会话
@@ -65,7 +66,7 @@ memory_limit = ToolCallLimitMiddleware(
 # 单次提问最多调用2次search_knowledge_base工具
 search_knowledge_limit = ToolCallLimitMiddleware(
     tool_name="search_knowledge_base",
-    run_limit=2,  # 最多调用两次
+    run_limit=1,  # 最多调用1次
 )
 
 
@@ -97,6 +98,7 @@ _agent_lock = asyncio.Lock()
 
 
 async def get_or_create_agent(checkpointer: AsyncRedisSaver):
+    start_time = time.time()
     """获取或创建全局agent实例"""
     global _global_agent
 
@@ -118,11 +120,12 @@ async def get_or_create_agent(checkpointer: AsyncRedisSaver):
                         dynamic_prompt,
                         SummarizationMiddleware(  # 对于异步运行方式，总结对话中间件会在 每次调用模型之前 执行，所以不用担心对话没被保存进psql
                             model=summarize_model,
-                            trigger=("tokens", 4000),
+                            trigger=("tokens", 10000),
                             keep=("messages", 20),
                         ),
                     ],
                 )
+    logger.info(f"创建全局agent实例耗时: {time.time() - start_time} 秒")
     return _global_agent
 
 
@@ -134,11 +137,14 @@ async def stream_agent_response(
 ) -> AsyncGenerator[str, None]:
     # 1. 配置 Redis 检查点保存器
     # 使用异步上下文管理器
+    start_time = time.time()
     async with AsyncRedisSaver.from_conn_string(
-        REDIS_URI, ttl=TTL_CONFIG
+        redis_url=REDIS_URL, ttl=TTL_CONFIG
     ) as checkpointer:
         await checkpointer.asetup()
+        logger.info(f"配置 Redis 检查点保存器耗时: {time.time() - start_time} 秒")
 
+        start_time = time.time()
         # 获取全局agent实例
         agent = await get_or_create_agent(checkpointer)
 
@@ -154,8 +160,11 @@ async def stream_agent_response(
                 {
                     "configurable": {"thread_id": f"{user_id}"}
                 },  # 这里的线程id是user_id因为没有做会话管理和会话隔离
-                stream_mode=["messages","custom"],  # 使用messages模式逐token输出实现打字效果，custom模式输出工具调用信息展示agent的思考过程
-                context=context
+                stream_mode=[
+                    "messages",
+                    "custom",
+                ],  # 使用messages模式逐token输出实现打字效果，custom模式输出工具调用信息展示agent的思考过程
+                context=context,
             ):
                 stream_mode, chunk_data = chunk
 
@@ -182,6 +191,7 @@ async def stream_agent_response(
                         {"type": "status", "content": custom_info}, ensure_ascii=False
                     ) + "\n"
 
+            logger.info(f"模型回答耗时: {time.time() - start_time} 秒")
             # 循环结束后，合并所有ai回复部分
             ai_message = "".join(ai_message_parts)
             # 添加后台任务保存对话到psql数据库
@@ -205,6 +215,7 @@ async def stream_agent_response(
 async def save_conversation_messages(
     user_id: int, thread_id: str, user_message: str, ai_message: str
 ):
+    start_time = time.time()
     """后台任务：保存对话到数据库"""
     try:
         postgresql_client = await get_postgresql_client()
@@ -222,6 +233,6 @@ async def save_conversation_messages(
         logger.info(
             f"[postgresql] 对话已保存: user_id={user_id}, thread_id={thread_id}"
         )
-
+        logger.info(f"保存对话到数据库耗时: {time.time() - start_time} 秒")
     except Exception as e:
         logger.error(f"保存对话失败: {e}")

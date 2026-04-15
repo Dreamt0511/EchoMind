@@ -9,9 +9,9 @@ import asyncio
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-load_dotenv(override=True)
+load_dotenv()
 
-REDIS_URI = os.getenv("Redis_URI")
+REDIS_URL = os.getenv("REDIS_URL")
 
 _global_redis_client = None
 _redis_lock = asyncio.Lock()
@@ -22,7 +22,7 @@ async def get_redis_client():
         async with _redis_lock:
             if _global_redis_client is None:  # ← 补上这行
                 _global_redis_client = Redis.from_url(
-                    REDIS_URI,
+                    url=REDIS_URL,
                     decode_responses=True,
                     socket_connect_timeout=5,
                     socket_timeout=5,
