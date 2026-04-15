@@ -43,8 +43,7 @@ EchoMind 是一个全功能的个性化 AI 问答系统，主要特点包括：
 - **智能记忆**：自动识别和过滤重复记忆，保持记忆库的高效性
 
 ## 📸 界面预览
-
-![alt text](assets/demo.gif)
+![alt text](assets/demo.png)
 
 
 ## ✨ 核心特性
