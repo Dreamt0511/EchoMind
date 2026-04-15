@@ -92,7 +92,50 @@ EchoMind 是一个全功能的个性化 AI 问答系统，主要特点包括：
 
 ![alt text](assets/framework.png)
 
+## 📁 项目文件说明
 
+### 后端服务 (`backend/`)
+
+| 文件 | 功能 | 关键特性 |
+|------|------|----------|
+| `main.py` | 应用入口 | 生命周期管理、后台定时任务 |
+| `api.py` | API 路由 | RESTful 接口、文件上传、流式对话 |
+| `agent.py` | Agent 核心 | LangChain agent、动态提示词、检查点短期记忆持久化 |
+| `tools.py` | 工具集 | search_knowledge_base / get_memory / get_raw_conversation |
+| `config.py` | 配置中心 | 提示词模板、分块参数、模型配置 |
+
+### 数据层 (`backend/`)
+
+| 文件 | 功能 | 存储内容 |
+|------|------|----------|
+| `milvus_client.py` | Milvus 客户端 | 知识库子块向量、四种类型记忆 |
+| `postgresql_client.py` | PostgreSQL 客户端 | 父块文本、文件元数据、对话记录、哈希去重 |
+| `redis_cache.py` | Redis 客户端 | 用户画像缓存、对话检查点 |
+
+### 业务逻辑 (`backend/`)
+
+| 文件 | 功能 | 核心算法 |
+|------|------|----------|
+| `memory_manager.py` | 记忆管理 | 混合检索hybrid_search、综合评分、冲突检测、去重过滤 |
+| `knowledge_base_manager.py` | 知识库管理 | 父子块策略、BM25+稠密混合检索（HNSW索引算法）、RRF 融合、 |
+| `documents_process.py` | 文档处理 | PDF/Word 解析、文本分块、Rerank重排序 |
+| `hash_storage.py` | 去重存储 | SHA-256 文件级/块级去重 |
+| `auto_store_memory_from_psql.py` | 记忆提取 | LLM 提取、画像融合、定时压缩 |
+
+### 前端界面 (`frontend/`)
+
+| 文件 | 功能 | 技术特点 |
+|------|------|----------|
+| `app.py` | 主界面 | SSE 流式接收、乐观更新、骨架屏加载 |
+| `style.css` | 样式文件 | 3D 动画、响应式布局、消息气泡 |
+
+### 配置与部署
+
+| 文件 | 用途 |
+|------|------|
+| `.env.example` | 环境变量模板 |
+| `requirements.txt` | Python 依赖版本锁定 |
+| `docker-compose.yml` | 一键部署配置 |
 ### 核心组件
 
 #### 1. Agent 系统 (`agent.py`)
@@ -157,32 +200,67 @@ pip install -r requirements.txt
 创建 `.env` 文件并配置以下参数：
 
 ```env
-# 大模型配置
+# ===== 大模型配置 =====
+# DashScope API Key（必填，从阿里云灵积平台获取）
 DASHSCOPE_API_KEY=your_dashscope_api_key
+
+# API 基础地址（DashScope 兼容 OpenAI 格式）
 BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-AGENT_BASE_MODEL=qwen-plus
+
+# Agent 主模型（推荐 qwen-plus，平衡性能与成本）
+AGENT_BASE_MODEL=qwen3.5-flash-2026-02-23
+
+# 记忆提取模型（后台任务使用，建议用小模型节省成本）
 SUMMARIZATION_MODEL=qwen-turbo
 
-# 向量数据库配置
-Milvus_url=your_milvus_url
-Token=your_milvus_token
-knowledge_base_collection=knowledge_base_collection
-memory_collection=memory_collection
-
-# Redis配置
-Redis_URI=redis://localhost:6379/0
-
-# 嵌入模型配置
+# ===== 嵌入模型配置 =====
+# 文本向量化模型（用于知识库和记忆的语义检索）
 EMBEDDING_MODEL=text-embedding-v4
+
+# 向量维度（text-embedding-v4 为 1024 维）
 dense_dimension=1024
 
-# 数据库配置
-DATABASE_URL=postgresql://user:pass@localhost:5432/echomind_db
+# ===== Rerank 重排序配置 =====
+# 重排序模型（用于优化检索结果的相关性排序）
+RERANK_MODEL=gte-rerank-v2
+
+# 重排序 API 地址
+RERANK_URL=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+
+# 重排序 API Key（默认与 DASHSCOPE_API_KEY 相同）
+RERANK_API_KEY=your_dashscope_api_key
+
+# ===== Milvus 向量数据库配置 =====
+# Zilliz Cloud 服务地址（或自建 Milvus 地址）
+Milvus_url=your_milvus_url
+
+# 认证 Token（Zilliz Cloud 格式：username:password）
+Token=your_milvus_token
+
+# 知识库集合名称
+knowledge_base_collection=knowledge_base_collection
+
+# 记忆集合名称
+memory_collection=memory_collection
+
+# ===== PostgreSQL 数据库配置 =====
+# 完整连接字符串（包含用户名、密码、主机、端口、数据库名）
+DATABASE_URL=postgresql://user:pass@localhost:5432/echomind_db?sslmode=disable
+
+# 分项配置（用于程序自动创建数据库）
 user=your_db_user
 password=your_db_password
 host=localhost
 port=5432
 db_name=echomind_db
+
+# ===== Redis 配置 =====
+# Redis 连接地址（用于对话检查点存储和用户画像缓存）
+REDIS_URL=redis://localhost:6379/0
+
+# ===== 临时文件目录 =====
+# 文档上传后的临时存储路径
+TEMP_DIR=/tmp
 ```
 
 5. **启动后端服务**
@@ -207,6 +285,7 @@ streamlit run app.py
 ## 📖 API 文档
 
 ### 核心端点
+
 
 #### 对话接口
 ```http
@@ -235,13 +314,45 @@ DELETE /knowledge-bases/{id}/documents/{hash}  # 删除文档
 ## 🔧 配置说明
 
 ### 记忆提取配置
-```python
-# 记忆类型重要性评分
-SEMANTIC_MEMORY_SCORE = 0.8    # 语义记忆
-EPISODIC_MEMORY_SCORE = 0.7    # 情节记忆  
-PROCEDURAL_MEMORY_SCORE = 0.6  # 程序记忆
-USER_PROFILE_SCORE = 0.9       # 用户画像
-```
+
+记忆提取通过 LLM 根据对话内容动态评估重要性，评分标准在提示词中定义：
+
+| 记忆类型 | 评分范围 | 评估依据 |
+|----------|----------|----------|
+| 语义记忆 | 0.1-1.0 | 事实稳定性、知识通用性、用户关联度 |
+| 情节记忆 | 0.1-1.0 | 事件重要性、时间敏感性、与用户目标关联 |
+| 程序记忆 | 0.1-1.0 | 方法复用性、任务频率、执行效果 |
+| 摘要记忆 | 0.1-1.0 | 对话信息密度、关键决策点、主题连贯性 |
+
+**基础评分参考**：
+- 0.8-0.9：个人身份、核心价值观、重大决定
+- 0.7-0.8：职业信息、学习目标、重要偏好
+- 0.6-0.7：工作相关知识、技能学习、待办任务
+- 0.3-0.5：日常对话、临时信息
+- 0.1-0.3：闲聊、一次性信息
+
+**配置方式**：修改 `config.py` 中的 `MEMORY_EXTRACT_PROMPT` 提示词模板。
+
+### 记忆检索配置
+
+记忆检索采用综合评分算法，从三个维度评估记忆相关性：
+
+| 评分维度 | 权重 | 说明 |
+|----------|------|------|
+| 语义相似度 | 45% | 向量相似度，匹配问题与记忆内容 |
+| 访问时间 | 25% | 最近访问的记忆得分更高（每小时衰减 0.5%） |
+| 重要性评分 | 30% | LLM 提取时赋予的重要性（0-1 分） |
+
+**记忆类型权重系数**：
+
+| 类型 | 权重 | 说明 |
+|------|------|------|
+| 语义记忆 | 1.3 | 事实知识，优先级最高 |
+| 程序记忆 | 1.2 | 方法流程，优先级较高 |
+| 情节记忆 | 1.0 | 历史事件，标准优先级 |
+| 摘要记忆 | 0.7 | 对话摘要，优先级较低 |
+
+**配置位置**：`backend/memory_manager.py` 中的 `get_the_top_k_memories` 方法。
 
 ### 文档分块配置
 ```python
@@ -329,7 +440,7 @@ Token数量超过阈值 → 记忆提取 → 冲突检测 →
 
 ## 🤝 贡献指南
 
-我们欢迎所有形式的贡献！请阅读我们的[贡献指南](CONTRIBUTING.md)了解如何参与项目开发。欢迎提交Pull Request或Issue。
+我们欢迎所有形式的贡献！欢迎提交Pull Request或Issue。
 
 ### 开发流程
 1. Fork 项目
@@ -339,7 +450,7 @@ Token数量超过阈值 → 记忆提取 → 冲突检测 →
 5. 创建 Pull Request
 
 ### 代码规范
-- 遵循 PEP 8 代码规范
+- 遵循 PEP 8 代码规范，类名采用驼峰命名法，函数名采用下划线命名法。
 - 为新功能添加适当的测试
 - 更新相关文档
 - 保持代码注释的清晰和完整
