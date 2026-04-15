@@ -2,14 +2,21 @@
 
 <div align="center">
 
+**念念不忘，必有回响**
+
 [![GitHub](https://img.shields.io/badge/GitHub-EchoMind-blue?logo=GitHub)](https://github.com/Dreamt0511/EchoMind)
-[![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104%2B-green)](https://fastapi.tiangolo.com)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.135%2B-009688?logo=FastAPI)](https://fastapi.tiangolo.com)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.56%2B-FF4B4B?logo=Streamlit)](https://streamlit.io)
+[![LangChain](https://img.shields.io/badge/LangChain-1.2%2B-1C3C3C?logo=LangChain)](https://langchain.com)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.1%2B-1C3C3C?logo=LangGraph)](https://langchain-ai.github.io/langgraph/)
+[![Milvus](https://img.shields.io/badge/pymilvus-2.6%2B-00A4B4?logo=Milvus)](https://milvus.io)
+[![Redis](https://img.shields.io/badge/redis-7.4%2B-DC382D?logo=Redis)](https://redis.io)
+[![DashScope](https://img.shields.io/badge/DashScope-1.25%2B-FF6A00?logo=AlibabaCloud)](https://dashscope.aliyun.com)
+[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?logo=Docker)](https://docker.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **EchoMind** 是一个基于 FastAPI 构建的个性化 AI 问答助手，具备长期记忆能力和知识库集成功能。系统通过结合向量数据库检索、记忆管理和 LLM 处理，为用户提供智能化的个性化回答。
 
-[English Version](#) | [中文文档](#)
 
 </div>
 
