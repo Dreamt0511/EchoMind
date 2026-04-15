@@ -44,7 +44,7 @@ EchoMind 是一个全功能的个性化 AI 问答系统，主要特点包括：
 
 ## 📸 界面预览
 
-![alt text](demo.gif)
+![alt text](assets/demo.gif)
 
 
 ## ✨ 核心特性
@@ -91,7 +91,7 @@ EchoMind 是一个全功能的个性化 AI 问答系统，主要特点包括：
 
 ### 整体架构
 
-![alt text](framework-1.png)
+![alt text](assets/framework.png)
 
 
 ### 核心组件
