@@ -5,11 +5,11 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import uuid
+from redis_cache import get_redis_client 
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
 
 async def ensure_database_exists(dsn: str) -> None:
     """确保数据库存在，不存在则自动创建"""
@@ -843,42 +843,46 @@ class PostgreSQLParentClient:
             return False
 
     async def get_user_profile(self, user_id: int) -> Optional[str]:
-        """
-        查询用户画像
-
-        Args:
-            user_id: 用户ID
-
-        Returns:
-            Optional[str]: 用户画像内容，不存在或失败返回 None
-        """
-        if not self.pool:
-            logger.error("Connection pool not initialized")
-            return None
-
+        """查询用户画像 - 使用 Redis 缓存"""
+        
         try:
+            # 1. 先从 Redis 缓存读取
+            redis_client = await get_redis_client()
+            cache_key = f"user_profile:{user_id}"
+            
+            # AsyncRedisSaver 底层是 redis.asyncio.Redis
+            cached_profile = await redis_client.get(cache_key)
+            if cached_profile:
+                logger.info(f"用户画像查询（Redis 缓存命中）user_id={user_id}")
+                return cached_profile
+            
+            # 2. 缓存未命中，查询数据库
+            if not self.pool:
+                return None
+            
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    """
-                    SELECT user_profile
-                    FROM users
-                    WHERE user_id = $1
-                    """,
+                    "SELECT user_profile FROM users WHERE user_id = $1",
                     user_id,
                 )
-
-                if row:
-                    logger.info("系统进行了一次用户画像查询")
-                    return row["user_profile"]
+                
+                if row and row["user_profile"]:
+                    profile = row["user_profile"]
+                    
+                    # 3. 写入 Redis 缓存（TTL 1小时）
+                    await redis_client.setex(cache_key, 3600, profile)
+                    logger.info(f"用户画像查询（数据库）user_id={user_id}, 已写入缓存")
+                    return profile
+                
                 return None
-
+                
         except Exception as e:
             logger.error(f"查询用户画像失败: {e}")
             return None
 
     async def update_user_profile(self, user_id: int, user_profile: str) -> bool:
         """
-        更新用户画像
+        更新用户画像，同时写入 Redis 缓存
 
         Args:
             user_id: 用户ID
@@ -896,6 +900,7 @@ class PostgreSQLParentClient:
             return False
 
         try:
+            # 1. 先更新数据库
             async with self.pool.acquire() as conn:
                 await conn.execute(
                     """
@@ -909,7 +914,14 @@ class PostgreSQLParentClient:
                     user_profile.strip(),
                 )
 
-            logger.info(f"成功更新用户 {user_id} 的画像")
+            # 2.更新 Redis 缓存
+            try:
+                redis_client = await get_redis_client()
+                cache_key = f"user_profile:{user_id}"
+                await redis_client.setex(cache_key, 3600, user_profile.strip())# 缓存 1 小时
+                logger.info(f"用户画像缓存已更新 user_id={user_id}")
+            except Exception as e:
+                logger.warning(f"更新 Redis 缓存失败: {e}")
             return True
 
         except Exception as e:
@@ -977,9 +989,7 @@ class PostgreSQLParentClient:
                     )
 
                 result = f"以下是summary_id={summary_id}对应的原始对话记录:\n" + "\n".join(formatted_lines)
-                logger.info(
-                    f"成功格式化 summary_id={summary_id} 的对话，共 {len(rows)} 条消息"
-                )
+                logger.info(f"成功查询到 summary_id={summary_id} 对应的原始对话记录，共 {len(rows)} 条消息")
 
                 return result
 
@@ -1080,7 +1090,7 @@ async def reset_summary_id_to_null(user_id: Optional[int] = None):
 
 if __name__ == "__main__":
     # 重置用户ID=1的所有记录的summary_id为NULL（调试用，用于auto_summrize_psql_message设置summary_id后的重置）
-    asyncio.run(reset_summary_id_to_null(1))
+    #asyncio.run(reset_summary_id_to_null(1))
 
     # 查看对话历史记录（用户ID=1），100条
-    #asyncio.run(test_query_by_user(1))
+    asyncio.run(test_query_by_user(1))

@@ -91,6 +91,41 @@ async def dynamic_prompt(request: ModelRequest) -> str:
         return SYSTEM_PROMPT_SPECIFIC
 
 
+# 全局单例
+_global_agent = None
+_agent_lock = asyncio.Lock()
+
+
+async def get_or_create_agent(checkpointer: AsyncRedisSaver):
+    """获取或创建全局agent实例"""
+    global _global_agent
+
+    if _global_agent is None:
+        async with _agent_lock:
+            if _global_agent is None:
+                _global_agent = create_agent(
+                    model=model,
+                    tools=[
+                        search_knowledge_base,
+                        get_memory,
+                        get_raw_conversation_by_summary_id,
+                    ],
+                    context_schema=ContextSchema,
+                    checkpointer=checkpointer,
+                    middleware=[
+                        memory_limit,
+                        search_knowledge_limit,
+                        dynamic_prompt,
+                        SummarizationMiddleware(  # 对于异步运行方式，总结对话中间件会在 每次调用模型之前 执行，所以不用担心对话没被保存进psql
+                            model=summarize_model,
+                            trigger=("tokens", 4000),
+                            keep=("messages", 20),
+                        ),
+                    ],
+                )
+    return _global_agent
+
+
 async def stream_agent_response(
     user_message: str,
     knowledge_base_id: str,
@@ -104,43 +139,23 @@ async def stream_agent_response(
     ) as checkpointer:
         await checkpointer.asetup()
 
-        # 创建agent
-        agent = create_agent(
-            model=model,
-            tools=[
-                search_knowledge_base,
-                get_memory,
-                get_raw_conversation_by_summary_id,
-            ],
-            context_schema=ContextSchema,
-            checkpointer=checkpointer,
-            middleware=[
-                memory_limit,
-                search_knowledge_limit,
-                dynamic_prompt,
-                SummarizationMiddleware(  # 对于异步运行方式，总结对话中间件会在 每次调用模型之前 执行，所以不用担心对话没被保存进psql
-                    model=summarize_model,
-                    trigger=("tokens", 4000),
-                    keep=("messages", 20),
-                ),
-            ],
-        )
+        # 获取全局agent实例
+        agent = await get_or_create_agent(checkpointer)
 
         # 组装AI回复
         ai_message = ""
+        ai_message_parts = []
         try:
+            context = ContextSchema(
+                user_id=user_id, knowledge_base_id=knowledge_base_id, top_k=5
+            )
             async for chunk in agent.astream(
                 {"messages": [{"role": "user", "content": user_message}]},
                 {
                     "configurable": {"thread_id": f"{user_id}"}
                 },  # 这里的线程id是user_id因为没有做会话管理和会话隔离
-                stream_mode=[
-                    "messages",
-                    "custom",
-                ],  # 使用messages模式逐token输出实现打字效果，custom模式输出工具调用信息展示agent的思考过程
-                context=ContextSchema(
-                    user_id=user_id, knowledge_base_id=knowledge_base_id, top_k=5
-                ),
+                stream_mode=["messages","custom"],  # 使用messages模式逐token输出实现打字效果，custom模式输出工具调用信息展示agent的思考过程
+                context=context
             ):
                 stream_mode, chunk_data = chunk
 
@@ -153,7 +168,7 @@ async def stream_agent_response(
                         and hasattr(message_chunk, "content")
                         and message_chunk.content
                     ):
-                        ai_message += message_chunk.content  # 累加ai回复
+                        ai_message_parts.append(message_chunk.content)  # 累加ai回复
                         yield json.dumps(
                             {"type": "answer", "content": message_chunk.content},
                             ensure_ascii=False,
@@ -167,7 +182,9 @@ async def stream_agent_response(
                         {"type": "status", "content": custom_info}, ensure_ascii=False
                     ) + "\n"
 
-            # 流式响应结束或，添加后台任务保存对话到psql数据库
+            # 循环结束后，合并所有ai回复部分
+            ai_message = "".join(ai_message_parts)
+            # 添加后台任务保存对话到psql数据库
             if background_tasks:
                 background_tasks.add_task(
                     save_conversation_messages,

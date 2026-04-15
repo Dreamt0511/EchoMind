@@ -7,6 +7,9 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from pymilvus import AsyncMilvusClient, DataType, Function, FunctionType
 from pymilvus import AnnSearchRequest, RRFRanker
 import logging
+from langgraph.config import get_stream_writer
+import time
+
 
 logger = logging.getLogger(__name__)
 
@@ -214,10 +217,15 @@ class KnowledgeBaseManager:
             filter_expr = f"user_id == {user_id}"
         else:
             filter_expr = f'knowledge_base_id == "{knowledge_base_id}" and user_id == {user_id}'
+        
+        writer = get_stream_writer()
+        writer("正在准备查询向量嵌入...")
+        start_time = time.time()
         # 生成稠密向量，带重试机制
         dense_vector = await self.get_dense_vector(query)
         if not dense_vector:
             return []
+        writer(f"查询向量嵌入耗时：{time.time() - start_time:.4f} 秒")
 
         # 创建搜索请求
         dense_req = AnnSearchRequest(

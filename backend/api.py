@@ -437,9 +437,8 @@ async def chat_with_agent(
     query: str,
     knowledge_base_id: str,
     user_id: int,
-    top_k: int = 5,
     background_tasks: BackgroundTasks = None,
-):  # 新增 user_id
+): 
     """
     流式返回 agent 响应
     """
